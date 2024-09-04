@@ -19,7 +19,7 @@ we took 5 million board state from this github repo (https://github.com/TCEC-Che
 | 5 - Queen  | 11 - Queen |
 | 6 - King   | 12 - King  |
 
-##Training Model 
+## Training Model 
 
 We are using the decoder model
 ![Decoder-Only Transformer Architecture](https://i.sstatic.net/bWnx0.png)
