@@ -1,0 +1,17 @@
+Iteration: 177
+Hyperparameters:
+total_batch_size: 4096
+adamw_weight_decay: 0.01
+gradient_clipping: 1.0
+max_lr: 0.001
+max_steps: 0.8
+n_layer: 8
+n_head: 8
+n_embd: 128
+n_blocks_policyhead: 3
+n_blocks_valuehead: 4
+dropout: 0.3
+total no of parameters: 39639937
+step=0 | loss=0.053050823509693146
+Model parameters saved to /workspace/runs/full_TCEC_run_1/iters/state_dict_v177.pth at step 0
+Validation Loss: 0.06820139288902283
