@@ -26,3 +26,9 @@ We are using the decoder model
 
 input -> embedding layer -> tensor(B,n_squares,n_emb)=tensor(4096,64,128)
 -> attention blocks -> tensor(4096,64,128) -> tensor(B,n_emb,a,a)=tensor(4096,128,8,8)
+
+
+## Results
+
+You can find that our loss  ... 
+
