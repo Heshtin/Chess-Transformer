@@ -20,5 +20,9 @@ we took 5 million board state from this github repo (https://github.com/TCEC-Che
 | 6 - King   | 12 - King  |
 
 ##Training Model 
+
 We are using the decoder model
 ![Decoder-Only Transformer Architecture](https://i.sstatic.net/bWnx0.png)
+
+input -> embedding layer -> tensor(B,n_squares,n_emb)=tensor(4096,64,128)
+-> attention blocks -> tensor(4096,64,128) -> tensor(B,n_emb,a,a)=tensor(4096,128,8,8)
