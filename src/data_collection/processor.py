@@ -48,6 +48,7 @@ create_database(db_path)
 
 import sqlite3
 import json
+import chess
 
 def batch_insert_data(db_path, fens, fen_lists, evals, move_prob_strings, batch_size=1000):
     # Open the database connection
