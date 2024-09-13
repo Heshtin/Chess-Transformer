@@ -36,12 +36,13 @@ for each position in the game, we construct the target policy as such:
 all legal moves other than the one played are assigned a score of 0
 all llegal moves are assigned a score of -10
 for positions where it is the winner's turn:
-the move played is optimal and is assigned a value of 1 + 1/(no of moves till victory)
+the move played is optimal and is assigned a value of 4 + 1/(no of moves till victory)
 for positions where it is the loser's turn:
-the move play is incorrect and is assigned a value of -1 - 1/(no of moves till defeat)
+the move play is incorrect and is assigned a value of -4 - 1/(no of moves till defeat)
 the above vector is constructed and undergoes softmax to achieve the target vector.
 these datapoints are added 
 
+*for player moves, we choose 4 and -4 because a value of 4-5 will give a probability of about 0.6-0.75 when no other good moves are present which is high enough. However, it is not too high to the point where it would overshadow other potentially good moves.
 
 
 
