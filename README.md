@@ -42,4 +42,4 @@ the move play is incorrect and is assigned a value of -4 - 1/(no of moves till d
 the above vector is constructed and undergoes softmax to achieve the target vector.
 these datapoints are added 
 
-NoteL for player moves, we choose 4 and -4 because a value of 4-5 will give a probability of about 0.6-0.75 when no other good moves are present which is high enough. However, it is not too high to the point where it would overshadow other potentially good moves.
+Note: for player moves, we choose 4 and -4 because a value of 4-5 will give a probability of about 0.6-0.75 when no other good moves are present which is high enough. However, it is not too high to the point where it would overshadow other potentially good moves.
