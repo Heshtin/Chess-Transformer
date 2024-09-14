@@ -34,7 +34,7 @@ the above vector is constructed and undergoes softmax to achieve the target vect
 
 for each position in the game, we construct the target policy as such:
 all legal moves other than the one played are assigned a score of 0
-all llegal moves are assigned a score of -10
+all illegal moves are assigned a score of -10
 for positions where it is the winner's turn:
 the move played is optimal and is assigned a value of 4 + 1/(no of moves till victory)
 for positions where it is the loser's turn:
@@ -43,3 +43,9 @@ the above vector is constructed and undergoes softmax to achieve the target vect
 these datapoints are added 
 
 Note: for player moves, we choose 4 and -4 because a value of 4-5 will give a probability of about 0.6-0.75 when no other good moves are present which is high enough. However, it is not too high to the point where it would overshadow other potentially good moves.
+
+## Understanding castling and en passant
+Right now, the model only understands castling rights and en passant based on the input embedding bits designated for castling and en_passant. But since we are always telling the model in the input whether castling and en passant is possible or not. So the model never learns how to tell whether a position has castling rights or en_passant rights, since this is based on past moves. This means that the model cannot do implicit search since it cannot tell how moves it is calculating affects castling rights and en passant rights. 
+
+Solution: 
+The special embedding is duplicated and independently passed through other linear layers to output vectors that predict whether the castling and en passant rights for the next move are valid. The target vector is a vector of the same size as the embedding that is filled with 1s to represent the rights are still valid, or 0 to represent to rights are no longer valid.
