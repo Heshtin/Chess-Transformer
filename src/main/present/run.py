@@ -358,12 +358,14 @@ class ChessDataset(Dataset):
         print(f"y padding value = {max_length_y}")
         for index, row in self.df.iloc[start_index:end_index].iterrows():
             x_add = row['x'].split(',')[:-1]
-            x_add = [int(xi) for xi in x_add]
+            x_add = [int(xi) + 1 for xi in x_add]
 
             move_index = row['move_index']
             evaluation = row['evaluation']
             legal_indices = row['legal_move_indices'].split(',')[:-1]
             legal_indices = [int(idx) for idx in legal_indices]
+            castling_rights = row['castling_rights']
+            en_passant = row['en_passant']
 
             if len(legal_indices) < max_length_y:
                 legal_indices.extend([-1] * (max_length_y - len(legal_indices)))
@@ -384,23 +386,12 @@ class ChessDataset(Dataset):
 
         print("finished iterating through all rows")
 
-        tanh_layer = nn.Tanh()
-        #sigmoid_layer = nn.Sigmoid()
 
         x = torch.tensor(x)
         p = torch.tensor(p)
-        # for i, v_value in enumerate(v):
-        #     if v_value > 10:
-        #         v[i] = 5
-        #     elif v_value < -10:
-        #         v[i] = -5
-        #     else:
-        #         v[i] *= 0.5
-        v = torch.tensor(v)
-        #v = tanh_layer(v) 
         y = torch.tensor(y)
 
-        return x, p, v, y
+        return x, p, y
 
 
 

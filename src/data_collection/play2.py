@@ -1,9 +1,4 @@
 import time
-x = 10
-start = time.perf_counter()
-x *= 10
-end = time.perf_counter()
-print("Time for *= operation:", end-start)
 
 y = 10
 start = time.perf_counter()
