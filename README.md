@@ -40,9 +40,8 @@ the move played is optimal and is assigned a value of 4 + 1/(no of moves till vi
 for positions where it is the loser's turn:
 the move play is incorrect and is assigned a value of -4 - 1/(no of moves till defeat)
 the above vector is constructed and undergoes softmax to achieve the target vector.
-these datapoints are added 
 
-Note: for player moves, we choose 4 and -4 because a value of 4-5 will give a probability of about 0.6-0.75 when no other good moves are present which is high enough. However, it is not too high to the point where it would overshadow other potentially good moves.
+Note: for player moves, we choose 4 and -4 because a value of 4-5 will give a probability of about 0.6-0.75 after softmax (assuming 30 legal moves) when no other good moves are present which is high enough. However, it is not too high to the point where it would overshadow other potentially good moves.
 
 ## Understanding castling and en passant
 Right now, the model only understands castling rights and en passant based on the input embedding bits designated for castling and en_passant. But since we are always telling the model in the input whether castling and en passant is possible or not. So the model never learns how to tell whether a position has castling rights or en_passant rights, since this is based on past moves. This means that the model cannot do implicit search since it cannot tell how moves it is calculating affects castling rights and en passant rights. 
