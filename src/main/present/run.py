@@ -100,7 +100,6 @@ class CausalSelfAttention(nn.Module):
         self.c_attn = nn.Linear(model_config.n_embd, 3 * model_config.n_embd)
         # output projection
         self.c_proj = nn.Linear(model_config.n_embd, model_config.n_embd)
-        self.c_proj.NANOGPT_SCALE_INIT = 1
         # regularization
         self.n_head = model_config.n_head
         self.n_embd = model_config.n_embd
@@ -128,7 +127,6 @@ class MLP(nn.Module):
         self.c_fc    = nn.Linear(model_config.n_embd, 4 * model_config.n_embd)
         self.gelu    = nn.GELU()
         self.c_proj  = nn.Linear(4 * model_config.n_embd, model_config.n_embd)
-        self.c_proj.NANOGPT_SCALE_INIT = 1
 
     def forward(self, x):
         x = self.c_fc(x)
@@ -192,20 +190,24 @@ class Transformer(nn.Module):
         self.model_config = model_config
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(model_config.vocab_size, model_config.n_embd),
-            wpe = nn.Embedding(model_config.block_size, model_config.n_embd),
+            wpe = nn.Embedding(model_config.squares_size, model_config.n_embd),
             h = nn.ModuleList([Block(model_config) for _ in range(model_config.n_layer)]),
             ln_f = nn.LayerNorm(model_config.n_embd),
         ))
 
-    def forward(self, idx):
+    def forward(self, squares, special_tokens):
         # idx is of shape (B, T)
-        B, T = idx.size()
-        assert T <= self.model_config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.model_config.block_size}"
+        squares = [0] + squares
+        B, T = squares.size()
+        assert T <= self.model_config.squares_size, f"Cannot forward sequence of length {T}, block size is only {self.model_config.squares_size}"
         # forward the token and position embeddings
-        pos = torch.arange(0, T, dtype=torch.long, device=idx.device) # shape (T)
+        
+        pos = torch.arange(0, T, dtype=torch.long, device=squares.device) # shape (T)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (T, n_embd)
-        tok_emb = self.transformer.wte(idx) # token embeddings of shape (B, T, n_embd)
-        x = tok_emb + pos_emb
+        tok_emb = self.transformer.wte(squares) # token embeddings of shape (B, T, n_embd)
+        special_tokens = special_tokens.to(squares.device) 
+        special_emb = special_tokens.unsqueeze(-1).expand(B, self.model_config.special_size, self.model_config.n_embd)
+        x = torch.cat((tok_emb + pos_emb, special_emb), dim=1)
         # forward the blocks of the transformer
         for block in self.transformer.h:
             x = block(x)
@@ -236,7 +238,7 @@ class Chess(nn.Module):
         if isinstance(module, nn.Linear):
             in_features = module.weight.size(1)  # Getting the size of input features
             a = 1 / math.sqrt(in_features)  # Xavier initialization scale factor
-            if module.out_features == 1968 or module.out_features == 3:
+            if module.out_features == 1968:
                 nn.init.uniform_(module.weight, -a, a)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0.0)
@@ -245,24 +247,6 @@ class Chess(nn.Module):
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0.01)
 
-            # a = math.sqrt(1/2048)
-            # b = math.sqrt(1/64)
-            # if module.out_features == 1968:  # Assuming this is the size of the policy vector
-            #     # Initialize weights to small uniform values
-            #     nn.init.uniform_(module.weight, -a, a)
-            #     # Initialize bias to zero
-            #     if module.bias is not None:
-            #         nn.init.constant_(module.bias, 0.0)
-            # elif module.out_features == 1:  # Assuming this is the value output
-            #     # Initialize weights to small uniform values
-            #     nn.init.uniform_(module.weight, -b, b)
-            #     # Initialize bias to zero
-            #     if module.bias is not None:
-            #         nn.init.constant_(module.bias, 0.0)
-            # else:
-            #     nn.init.xavier_uniform_(module.weight)
-            #     if module.bias is not None:
-            #         nn.init.constant_(module.bias, 0.01)
         elif isinstance(module, nn.Embedding):
             nn.init.uniform_(module.weight, -math.sqrt(1/module.embedding_dim), math.sqrt(1/module.embedding_dim))
         elif isinstance(module, nn.LayerNorm):
@@ -274,10 +258,9 @@ class Chess(nn.Module):
                 nn.init.constant_(module.bias, 0)
 
 
-    def forward(self, data, legal_indices, p=None, v=None):
+    def forward(self, squares, special_tokens, legal_indices, p=None, v=None):
         # idx is of shape (B, T)
-        B, T = data.size()
-        x = self.transformer(data)
+        x = self.transformer(squares, special_tokens)
         policy_input = x[:][0][:].squeeze()
         x_policy = self.policy_head(policy_input)
         
@@ -296,7 +279,7 @@ class Chess(nn.Module):
 class ChessDataset(Dataset):
     def __init__(self, db_path, n_limit, split, n1=0.8, n2=0.1, transform=None):
         self.transform = transform
-        self.n_limit = n_limit if n_limit else 1000000000
+        self.n_limit_query = f" LIMIT {n_limit};" if n_limit else ";"
         self.df = self.get_dataframe(db_path)
         self.n_total = len(self.df)
         self.n_train = int(n1 * self.n_total)
@@ -320,19 +303,19 @@ class ChessDataset(Dataset):
     def __getitem__(self, idx):
         x = self.data[0][idx]
         p = self.data[1][idx]
-        v = self.data[2][idx]
+        special_tokens = self.data[2][idx]
         y = self.data[3][idx]
 
         if self.transform:
             x = self.transform(x)
 
-        return x, p, v, y
+        return x, p, special_tokens, y
 
     def get_dataframe(self, db_path):
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         #query = f"SELECT move_index, legal_move_indices, x, evaluation FROM evaluations WHERE ABS(evaluation) > 1;"
-        query = f"SELECT move_index, legal_move_indices, x, evaluation, castling_rights, en_passant FROM evaluations LIMIT {self.n_limit};" # WHERE n_pieces <= 12" #Change number of pieces per position
+        query = f"SELECT move_index, legal_move_indices, x, evaluation, castling_rights, en_passant FROM evaluations{self.n_limit_query}" # WHERE n_pieces <= 12" #Change number of pieces per position
         cursor.execute(query)
         results = cursor.fetchall()
         df = pd.DataFrame(results, columns=['move_index', 'legal_move_indices', 'x', 'evaluation', 'castling_rights', 'en_passant'])
@@ -341,44 +324,50 @@ class ChessDataset(Dataset):
         return df
 
     def convert_df(self, start_index, end_index):
-        x, p, v, y = [], [], [], []
-        max_length_y = 100
+        x, p, special_tokens, y = [], [], [], [] #squares, policy vector (output), castling/en-passant rights, legal_moves_indices
+        #max_length_y = 100
 
-        ave_legal_index_len = 0
+        #ave_legal_index_len = 0
 
         #for _, row in self.df.iterrows():
-        # for index, row in self.df.iloc[start_index:end_index].iterrows():
-        #     legal_indices = row['legal_move_indices'].split(',')[:-1]
-        #     legal_indices = [int(idx) for idx in legal_indices]
-        #     ave_legal_index_len += len(legal_indices)
-        #     if len(legal_indices) > max_length_y:
-        #         max_length_y = len(legal_indices)
-        # ave_legal_index_len /= (end_index - start_index)
-        # print(f"{ave_legal_index_len=}")
+        for index, row in self.df.iloc[start_index:end_index].iterrows():
+            legal_indices = row['legal_move_indices'].split(',')[:-1]
+            legal_indices = [int(idx) for idx in legal_indices]
+            ave_legal_index_len += len(legal_indices)
+            if len(legal_indices) > max_length_y:
+                max_length_y = len(legal_indices)
+        ave_legal_index_len /= (end_index - start_index)
+        print(f"{ave_legal_index_len=}")
         print(f"y padding value = {max_length_y}")
         for index, row in self.df.iloc[start_index:end_index].iterrows():
-            x_add = row['x'].split(',')[:-1]
-            x_add = [int(xi) + 1 for xi in x_add]
+            x_squares = row['x'].split(',')[:-1]
+            x_squares = [int(xi) + 1 for xi in x_squares]
 
             move_index = row['move_index']
-            evaluation = row['evaluation']
             legal_indices = row['legal_move_indices'].split(',')[:-1]
             legal_indices = [int(idx) for idx in legal_indices]
             castling_rights = row['castling_rights']
             en_passant = row['en_passant']
+            castle_en_passant_rights = [0] * 13
+            if "K" in castling_rights:
+                castle_en_passant_rights[0] = 1
+            if "Q" in castling_rights:
+                castle_en_passant_rights[1] = 1
+            if "k" in castling_rights:
+                castle_en_passant_rights[2] = 1
+            if "q" in castling_rights:
+                castle_en_passant_rights[3] = 1
+            if en_passant != "-":
+                castle_en_passant_rights[4] = 1
+                castle_en_passant_rights[5 + (ord(en_passant[0]) - 97)] = 1 #set the file with the en_passant-able square to 1
+            
 
             if len(legal_indices) < max_length_y:
                 legal_indices.extend([-1] * (max_length_y - len(legal_indices)))
 
-            x.append(x_add)
+            x.append(x_squares)
             p.append(move_index)
-            if evaluation > 1:
-                evaluation_index = 1
-            elif evaluation < -1:
-                evaluation_index = 2
-            else:
-                evaluation_index = 0
-            v.append(evaluation_index)
+            special_tokens.append(castle_en_passant_rights)
             y.append(legal_indices)
 
             if index % 1000000 == 0:
@@ -389,9 +378,10 @@ class ChessDataset(Dataset):
 
         x = torch.tensor(x)
         p = torch.tensor(p)
+        special_tokens = torch.tensor(special_tokens)
         y = torch.tensor(y)
 
-        return x, p, y
+        return x, p, special_tokens, y
 
 
 
@@ -430,7 +420,8 @@ class Run_Config():
 
 @dataclass
 class Chess_Config():
-    block_size: int = 64 # n_squares
+    squares_size: int = 65 # n_squares + 1 for special token
+    special_size: int = 13
     vocab_size: int = 27 # 1 special token, 1 empty square, 6 own pieces, 6 opponent pieces, 4 castling rights, 9 en_passant (1st for availabiltiy, other 8 to indicate file)
     n_layer: int = HyperParamConfig.n_layer # [16, 24, 32]
     n_head: int = HyperParamConfig.n_head # [8, 16, 32]
@@ -449,9 +440,6 @@ print("Total number of parameters: ", total_params)
 # If your policy head parameters are scattered in the model
 policy_params = sum(p.numel() for name, p in model.named_parameters() if 'policy' in name and p.requires_grad)
 print(f"Total number of parameters in the policy head: {policy_params}")
-# Assuming 'model.value_head' is the submodule for your value head
-value_params = sum(p.numel() for p in model.value_head.parameters() if p.requires_grad)
-print(f"Total number of parameters in the value head: {value_params}")
 
 model = torch.compile(model)
 
@@ -484,19 +472,15 @@ grad_accum_steps = total_batch_size // batch_size
 
 policy_head_fc_params = list(model.policy_head.fc.parameters())
 policy_head_fc_param_ids = {id(param) for param in policy_head_fc_params}
-value_head_fc_params = list(model.value_head.fc.parameters())
-value_head_fc_params_ids = {id(param) for param in value_head_fc_params}
 
 policy_head_params = [param for name, param in model.named_parameters() if 'policy_head' in name and id(param) not in policy_head_fc_param_ids]
-value_head_params = [param for name, param in model.named_parameters() if 'value_head' in name and id(param) not in value_head_fc_params_ids]
 
-rest_of_model_params = [param for name, param in model.named_parameters() if 'policy_head' not in name and 'value_head' not in name]
+
+rest_of_model_params = [param for name, param in model.named_parameters() if 'policy_head' not in name]
 
 params = [
     {'params': policy_head_fc_params, 'lr_type': -1},  # Final layer of policy head
-    {'params': value_head_fc_params, 'lr_type': -3},   # Final layer of value head
     {'params': policy_head_params, 'lr_type': -2},  # Entire policy head except final layer
-    {'params': value_head_params, 'lr_type': -4},  # Entire value head except final layer
     {'params': rest_of_model_params, 'lr_type': 1}  # Rest of the model
 ]
 
@@ -537,39 +521,27 @@ def training(model, train_loader, val_loader, optimizer, grad_accum_steps, devic
     for step in range(run_config.total_steps):
         optimizer.zero_grad(set_to_none=True)
         losses_list = []
-        losses_p_list = []
-        losses_v_list = []
-        updated_consecutive_counter = False
         
         for micro_step in range(grad_accum_steps):
             try:
-                data, p, v, legal_indices = next(train_iter)
+                data, p, special_tokens, legal_indices = next(train_iter)
             except StopIteration:
                 train_iter = iter(train_loader)
-                data, p, v, legal_indices = next(train_iter)
+                data, p, special_tokens, legal_indices = next(train_iter)
 
-            data, p, v, legal_indices = data.to(device), p.to(device), v.to(device), legal_indices.to(device)
+            data, p, special_tokens, legal_indices = data.to(device), p.to(device), special_tokens.to(device), legal_indices.to(device)
 
             # Evaluate the loss
             with torch.autocast(device_type=device, dtype=torch.bfloat16):
-                x_policy, x_value, loss_p, loss_v = model(data, legal_indices, p, v)
-            loss = loss_p + loss_v
+                x_policy, loss = model(data, legal_indices, p, special_tokens)
             if torch.isnan(loss):
                 print(f"{loss=}")
             loss = loss / grad_accum_steps
-            loss_p = loss_p / grad_accum_steps
-            loss_v = loss_v / grad_accum_steps
-            #print(loss)
-            #import sys; sys.exit(0)
-            
+
             losses_list.append(loss.item())
-            losses_p_list.append(loss_p.item())
-            losses_v_list.append(loss_v.item())
             loss.backward()
             
         loss_accum = sum(losses_list)
-        loss_p_accum = sum(losses_p_list)
-        loss_v_accum = sum(losses_v_list)
         if math.isnan(loss_accum):
             print(grad_accum_steps)
             with open(debug_path, "a") as file:
@@ -584,16 +556,12 @@ def training(model, train_loader, val_loader, optimizer, grad_accum_steps, devic
                 param_group['lr'] = lr * 5e-2 # Smaller learning rate for final layers
             elif param_group['lr_type'] == -2: # policy head
                 param_group['lr'] = lr * 5e-1  # Moderately smaller learning rate for entire policy and value heads
-            elif param_group['lr_type'] == -3: # value head final linear layer
-                param_group['lr'] = lr * 5e-3
-            elif param_group['lr_type'] == -4: # value head
-                param_group['lr'] = lr * 5e-2
             else:
                 param_group['lr'] = lr  # Default learning rate for the rest of the model
 
         optimizer.step()
         if log_path is not None:
-            loss_storage[step] = (loss_accum, loss_p_accum, loss_v_accum)
+            loss_storage[step] = loss_accum
 
         
         if step % 1000 == 0 or step == run_config.total_steps - 1:
@@ -603,12 +571,12 @@ def training(model, train_loader, val_loader, optimizer, grad_accum_steps, devic
             if log_path is not None:
                 with open(log_path, "a") as file:
                     for key, value in loss_storage.items():
-                        file.write(f"step={key} | loss={value[0]} | loss_p={value[1]} | loss_v={value[2]}\n")
+                        file.write(f"step={key} | loss={value[0]}\n")
                     file.write(f"Model parameters saved to {model_path} at step {step}\n")
                 loss_storage = {}
         if step % 1000 == 999:
             validation(model, val_loader, optimizer, grad_accum_steps, device, run_config, model_path, log_path)
-        print(f"step={step} | loss={loss_accum} | loss_p={loss_p_accum} | loss_v={loss_v_accum}")
+        print(f"step={step} | loss={loss_accum}")
         
         
 
@@ -620,8 +588,6 @@ def validation(model, train_loader, optimizer, grad_accum_steps, device, run_con
     model.eval()
     val_loss = 0
     losses_list = []
-    losses_p_list = []
-    losses_v_list = []
     val_iter = iter(val_loader)
     print("starting validation")
     with torch.no_grad():
@@ -636,16 +602,12 @@ def validation(model, train_loader, optimizer, grad_accum_steps, device, run_con
             x_policy, x_value, loss_p, loss_v = model(data, legal_indices, p, v)
             loss = loss_p + loss_v
             losses_list.append(loss.item())
-            losses_p_list.append(loss_p.item())
-            losses_v_list.append(loss_v.item())
         loss_accum = sum(losses_list)/len(losses_list)
-        loss_p_accum = sum(losses_p_list)/len(losses_p_list)
-        loss_v_accum = sum(losses_v_list)/len(losses_v_list)
     if log_path is not None:
         with open(log_path, 'a') as log_file:
-            log_file.write(f"Validation Loss: {loss_accum} | loss_p={loss_p_accum} | loss_v={loss_v_accum}\n")
+            log_file.write(f"Validation Loss: {loss_accum}\n")
 
-    print(f"Validation Loss: {loss_accum} | loss_p={loss_p_accum} | loss_v={loss_v_accum}")
+    print(f"Validation Loss: {loss_accum}")
 
 if run_training:
     training(model, train_loader, val_loader, optimizer, grad_accum_steps, device, run_config, model_path, log_path)
