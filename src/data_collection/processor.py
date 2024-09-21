@@ -163,17 +163,35 @@ index_to_move = move_dict_obj.index_move_dict
 
 
 
-def fen_to_vector(fen, turn_multiplier):
-    if turn_multiplier == -1:
-        fen = fen.swapcase()[::-1]
+def fen_to_vector(fen):
+    fen_parts = fen.split(" ")
+    if fen_parts[1] == "b":
+        fen_parts[1] = 1
+        fen_parts = [part.swapcase() for part in fen_parts]
+    else:
+        fen_parts[1] = 0
+    fen_parts = fen.split(" ")
+    castling_rights_dict = {"K":0,"Q":1,"k":2,"q":3,"-":4}
+    special_tokens = [0] * 13
+    for char in fen_parts[2]:
+        special_tokens[castling_rights_dict[char]] = 1
+    if fen_parts[3] == "-":
+        special_tokens[4] = 0
+    else:
+        special_tokens[ord(fen_parts[3][0] - 97 + 5)] = 1
     position=""
-    piece_dict = {" ":"0,", "p":"1,", "n":"2,", "b":"3,", "r":"4,", "q":"5,", "k":"6,", "P":"7,", "N":"8,", "B":"9,", "R":"10,", "Q":"11,", "K":"12,"}
-    for row in fen.split("/"):
+    piece_dict = {" ":"1,", "p":"2,", "n":"3,", "b":"4,", "r":"5,", "q":"6,", "k":"7,", "P":"8,", "N":"9,", "B":"10,", "R":"11,", "Q":"12,", "K":"13,"}
+    for row in fen_parts[0]:
         for square in row:
             if square.isalpha():
                 position+=piece_dict[square]
             else:
                 position+=int(square)*"0,"
+    castling_rights = fen_parts[2]
+    position += "1," if "K" in castling_rights else "0,"
+    position += "1," if "Q" in castling_rights else "0,"
+    position += "1," if "k" in castling_rights else "0,"
+    position += "1," if "q" in castling_rights else "0,"
     return position[:-1]
 
 
