@@ -3,7 +3,7 @@ def fen_to_vector(fen):
     if fen_parts[1] == "b":
         
         fen_parts[0] = fen_parts[0][::-1].swapcase()
-        print(fen_parts[0])
+        
         fen_parts[2] = fen_parts[2].swapcase()
         #fen_parts[1] = 1
     # else:
