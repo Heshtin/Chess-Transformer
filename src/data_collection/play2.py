@@ -8,7 +8,7 @@ def fen_to_vector(fen):
         #fen_parts[1] = 1
     # else:
     #     #fen_parts[1] = 0
-    position="0,"
+    position="0," #special token
     piece_dict = {" ":"1,", "p":"2,", "n":"3,", "b":"4,", "r":"5,", "q":"6,", "k":"7,", "P":"8,", "N":"9,", "B":"10,", "R":"11,", "Q":"12,", "K":"13,"}
     for row in fen_parts[0].split("/"):
         for square in row:
