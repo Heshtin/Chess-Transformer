@@ -539,9 +539,10 @@ def training(model, train_loader, val_loader, optimizer, grad_accum_steps, devic
                         file.write(f"step={key} | loss={value[0]}\n")
                     file.write(f"Model parameters saved to {model_path} at step {step}\n")
                 loss_storage = {}
+        print(f"step={step} | loss={loss_accum}")
         if step % 1000 == 999:
             validation(model, val_loader, optimizer, grad_accum_steps, device, run_config, model_path, log_path)
-        print(f"step={step} | loss={loss_accum}")
+        
         
         
 
@@ -558,14 +559,13 @@ def validation(model, train_loader, optimizer, grad_accum_steps, device, run_con
     with torch.no_grad():
         while True:
             try:
-                data, p, v, legal_indices = next(val_iter)
+                board_state_tensor, special_token_tensor, target_p_tensor = next(val_iter)
             except StopIteration:
                 break
-            data, p, v, legal_indices = data.to(device), p.to(device), v.to(device), legal_indices.to(device)
+            board_state_tensor, special_token_tensor, target_p_tensor = board_state_tensor.to(device), special_token_tensor.to(device), target_p_tensor.to(device)
 
             # Evaluate the loss
-            x_policy, x_value, loss_p, loss_v = model(data, legal_indices, p, v)
-            loss = loss_p + loss_v
+            x_policy, loss = model(board_state_tensor, special_token_tensor, target_p_tensor)
             losses_list.append(loss.item())
         loss_accum = sum(losses_list)/len(losses_list)
     if log_path is not None:
