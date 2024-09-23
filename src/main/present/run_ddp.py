@@ -14,7 +14,7 @@ from skopt import gp_minimize
 from skopt.space import Real, Integer, Categorical
 from skopt.optimizer import Optimizer
 import joblib
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
 import json
 from torch.distributed import init_process_group, destroy_process_group
 
@@ -374,14 +374,16 @@ class ChessDataset(Dataset):
 #indv batch size always 16 (or as much as GPU can handle)
 if run_training:
     train_dataset = ChessDataset(db_path, n_limit, 'train', n1=0.8, n2=0.1)
-    train_loader = DataLoader(train_dataset, batch_size=gpu_batch_size, shuffle=True, num_workers=n_workers)
+    train_sampler = DistributedSampler(train_dataset, num_replicas=ddp_world_size, rank=ddp_rank) if ddp else None
+    train_loader = DataLoader(train_dataset, batch_size=gpu_batch_size, sampler=train_sampler, shuffle=(train_sampler is None), num_workers=n_workers)
 if run_validation:
     val_dataset = ChessDataset(db_path, n_limit, 'val', n1=0.8, n2=0.1)
-    val_loader = DataLoader(val_dataset, batch_size=gpu_batch_size, shuffle=False, num_workers=n_workers)
+    val_sampler = DistributedSampler(val_dataset, num_replicas=ddp_world_size, rank=ddp_rank) if ddp else None
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, sampler=val_sampler, shuffle=(val_sampler is None), num_workers=n_workers)
 if run_testing:
     test_dataset = ChessDataset(db_path, n_limit, 'test', n1=0.8, n2=0.1)
-    test_loader = DataLoader(test_dataset, batch_size=gpu_batch_size, shuffle=False, num_workers=n_workers)
-
+    test_sampler = DistributedSampler(test_dataset, num_replicas=ddp_world_size, rank=ddp_rank) if ddp else None
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, sampler=test_sampler, shuffle=(test_sampler is None), num_workers=n_workers)
 
 
 
@@ -426,7 +428,8 @@ policy_params = sum(p.numel() for name, p in model.named_parameters() if 'policy
 print(f"Total number of parameters in the policy head: {policy_params}")
 
 model = torch.compile(model)
-
+if ddp:
+    model = DDP(model, device_ids=[ddp_local_rank])
 
 
 
@@ -450,8 +453,8 @@ def get_lr(it):
 
 total_batch_size = run_config.total_batch_size # used for alphazero
 batch_size = run_config.batch_size
-assert total_batch_size % batch_size == 0
-grad_accum_steps = total_batch_size // batch_size
+assert total_batch_size % (batch_size * ddp_world_size) == 0
+grad_accum_steps = total_batch_size // (batch_size * ddp_world_size
 
 
 policy_head_fc_params = list(model.policy_head.fc.parameters())
@@ -504,6 +507,9 @@ def training(model, train_loader, val_loader, optimizer, grad_accum_steps, devic
         optimizer.zero_grad(set_to_none=True)
         losses_list = []
         
+        if ddp and isinstance(train_loader.sampler, torch.utils.data.DistributedSampler):
+            train_loader.sampler.set_epoch
+
         for micro_step in range(grad_accum_steps):
             try:
                 board_state_tensor, special_token_tensor, target_p_tensor = next(train_iter)
@@ -514,14 +520,14 @@ def training(model, train_loader, val_loader, optimizer, grad_accum_steps, devic
             board_state_tensor, special_token_tensor, target_p_tensor = board_state_tensor.to(device), special_token_tensor.to(device), target_p_tensor.to(device), legal_indices.to(device)
 
             # Evaluate the loss
-            with torch.autocast(device_type=device, dtype=torch.bfloat16):
+            with torch.cuda.amp.autocast():
                 x_policy, loss = model(board_state_tensor, special_token_tensor, target_p_tensor)
             if torch.isnan(loss):
                 print(f"{loss=}")
             loss = loss / grad_accum_steps
 
             losses_list.append(loss.item())
-            loss.backward()
+            scaler.scale(loss).backward()
             
         loss_accum = sum(losses_list)
         if math.isnan(loss_accum):
@@ -540,13 +546,16 @@ def training(model, train_loader, val_loader, optimizer, grad_accum_steps, devic
                 param_group['lr'] = lr * 5e-1  # Moderately smaller learning rate for entire policy and value heads
             else:
                 param_group['lr'] = lr  # Default learning rate for the rest of the model
-
+        scaler.step(optimizer)
+        scaler.update()
+        if ddp:
+            torch.distributed.barrier()
         optimizer.step()
-        if log_path is not None:
+        if log_path is not None and master_process:
             loss_storage[step] = loss_accum
 
         
-        if step % 1000 == 0 or step == run_config.total_steps - 1:
+        if step % 1000 == 999 and master_process:
             if model_path is not None:
                 torch.save(model.state_dict(), model_path)
                 print(f"Model parameters saved to {model_path} at step {step}")
