@@ -257,22 +257,16 @@ class Chess(nn.Module):
                 nn.init.constant_(module.bias, 0)
 
 
-    def forward(self, board_state_tensor, special_token_tensor, target_p=None,):
+    def forward(self, board_state_tensor, special_token_tensor, target_p_tensor=None,):
         # idx is of shape (B, T)
         x = self.transformer(board_state_tensor, special_token_tensor)
         policy_input = x[:][0][:].squeeze()
         x_policy = self.policy_head(policy_input)
         
         loss = None
-        if p is not None and v is not None:
-            p = p.long()
-            # x_policy_softmax = F.softmax(x_policy, dim=1)
-            # correct_index_values = torch.full((x_policy_softmax.shape[0],), -1.0, dtype=torch.double).to(device)
-
-            # for b in range(x_policy_softmax.shape[0]):
-            #     correct_index_values[b] = x_policy_softmax[b][p[b]]
-
-            loss_p = F.cross_entropy(x_policy, p)
+        if target_p_tensor is not None:
+            target_p_tensor = target_p_tensor.long()
+            loss_p = F.cross_entropy(x_policy, target_p_tensor)
         return x_policy, loss_p
 
 class ChessDataset(Dataset):
@@ -495,16 +489,16 @@ def training(model, train_loader, val_loader, optimizer, grad_accum_steps, devic
         
         for micro_step in range(grad_accum_steps):
             try:
-                data, p, special_tokens, legal_indices = next(train_iter)
+                board_state_tensor, special_token_tensor, target_p_tensor = next(train_iter)
             except StopIteration:
                 train_iter = iter(train_loader)
-                data, p, special_tokens, legal_indices = next(train_iter)
+                board_state_tensor, special_token_tensor, target_p_tensor = next(train_iter)
 
-            data, p, special_tokens, legal_indices = data.to(device), p.to(device), special_tokens.to(device), legal_indices.to(device)
+            board_state_tensor, special_token_tensor, target_p_tensor = board_state_tensor.to(device), special_token_tensor.to(device), target_p_tensor.to(device), legal_indices.to(device)
 
             # Evaluate the loss
             with torch.autocast(device_type=device, dtype=torch.bfloat16):
-                x_policy, loss = model(data, legal_indices, p, special_tokens)
+                x_policy, loss = model(board_state_tensor, special_token_tensor, target_p_tensor)
             if torch.isnan(loss):
                 print(f"{loss=}")
             loss = loss / grad_accum_steps
