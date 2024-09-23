@@ -379,11 +379,11 @@ if run_training:
 if run_validation:
     val_dataset = ChessDataset(db_path, n_limit, 'val', n1=0.8, n2=0.1)
     val_sampler = DistributedSampler(val_dataset, num_replicas=ddp_world_size, rank=ddp_rank) if ddp else None
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, sampler=val_sampler, shuffle=(val_sampler is None), num_workers=n_workers)
+    val_loader = DataLoader(val_dataset, batch_size=gpu_batch_size, sampler=val_sampler, shuffle=(val_sampler is None), num_workers=n_workers)
 if run_testing:
     test_dataset = ChessDataset(db_path, n_limit, 'test', n1=0.8, n2=0.1)
     test_sampler = DistributedSampler(test_dataset, num_replicas=ddp_world_size, rank=ddp_rank) if ddp else None
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, sampler=test_sampler, shuffle=(test_sampler is None), num_workers=n_workers)
+    test_loader = DataLoader(test_dataset, batch_size=gpu_batch_size, sampler=test_sampler, shuffle=(test_sampler is None), num_workers=n_workers)
 
 
 
@@ -454,7 +454,7 @@ def get_lr(it):
 total_batch_size = run_config.total_batch_size # used for alphazero
 batch_size = run_config.batch_size
 assert total_batch_size % (batch_size * ddp_world_size) == 0
-grad_accum_steps = total_batch_size // (batch_size * ddp_world_size
+grad_accum_steps = total_batch_size // (batch_size * ddp_world_size)
 
 
 policy_head_fc_params = list(model.policy_head.fc.parameters())
@@ -502,13 +502,15 @@ if write:
 def training(model, train_loader, val_loader, optimizer, grad_accum_steps, device, run_config, model_path, log_path):
     train_iter = iter(train_loader)
     loss_storage = {}
+    scaler = torch.cuda.amp.GradScaler()
     print("starting training")
     for step in range(run_config.total_steps):
         optimizer.zero_grad(set_to_none=True)
         losses_list = []
         
         if ddp and isinstance(train_loader.sampler, torch.utils.data.DistributedSampler):
-            train_loader.sampler.set_epoch
+            train_loader.sampler.set_epoch(step)
+            
 
         for micro_step in range(grad_accum_steps):
             try:
@@ -517,7 +519,7 @@ def training(model, train_loader, val_loader, optimizer, grad_accum_steps, devic
                 train_iter = iter(train_loader)
                 board_state_tensor, special_token_tensor, target_p_tensor = next(train_iter)
 
-            board_state_tensor, special_token_tensor, target_p_tensor = board_state_tensor.to(device), special_token_tensor.to(device), target_p_tensor.to(device), legal_indices.to(device)
+            board_state_tensor, special_token_tensor, target_p_tensor = board_state_tensor.to(device), special_token_tensor.to(device), target_p_tensor.to(device)
 
             # Evaluate the loss
             with torch.cuda.amp.autocast():
@@ -536,7 +538,7 @@ def training(model, train_loader, val_loader, optimizer, grad_accum_steps, devic
                     for i in range(len(losses_list)):
                         file.write(f"{losses_list[i]}\n")
             import sys; sys.exit(0)
-        
+        scaler.unscale_(optimizer)
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), run_config.gradient_clipping)
         lr = get_lr(step)
         for param_group in optimizer.param_groups:
@@ -548,35 +550,29 @@ def training(model, train_loader, val_loader, optimizer, grad_accum_steps, devic
                 param_group['lr'] = lr  # Default learning rate for the rest of the model
         scaler.step(optimizer)
         scaler.update()
-        if ddp:
-            torch.distributed.barrier()
-        optimizer.step()
+
         if log_path is not None and master_process:
             loss_storage[step] = loss_accum
 
         
-        if step % 1000 == 999 and master_process:
+        if (step % 1000 == 0 or step == run_config.total_steps - 1) and master_process:
             if model_path is not None:
                 torch.save(model.state_dict(), model_path)
                 print(f"Model parameters saved to {model_path} at step {step}")
             if log_path is not None:
                 with open(log_path, "a") as file:
                     for key, value in loss_storage.items():
-                        file.write(f"step={key} | loss={value[0]}\n")
+                        file.write(f"step={key} | loss={value}\n")
                     file.write(f"Model parameters saved to {model_path} at step {step}\n")
                 loss_storage = {}
         print(f"step={step} | loss={loss_accum}")
-        if step % 1000 == 999:
+        if step % 1000 == 999: #called on all processes, not just master process
             validation(model, val_loader, optimizer, grad_accum_steps, device, run_config, model_path, log_path)
-        
-        
-        
+    if master_process:
+        torch.save(model.state_dict(), model_path)
+        print(f"Model parameters saved to {model_path}")
 
-
-    torch.save(model.state_dict(), model_path)
-    print(f"Model parameters saved to {model_path}")
-
-def validation(model, train_loader, optimizer, grad_accum_steps, device, run_config, model_path, log_path):
+def validation(model, val_loader, device, run_config, model_path, log_path):
     model.eval()
     losses_list = []
     val_iter = iter(val_loader)
@@ -592,18 +588,28 @@ def validation(model, train_loader, optimizer, grad_accum_steps, device, run_con
             # Evaluate the loss
             x_policy, loss = model(board_state_tensor, special_token_tensor, target_p_tensor)
             losses_list.append(loss.item())
-        loss_accum = sum(losses_list)/len(losses_list)
-    if log_path is not None:
+        loss_accum = sum(losses_list)/len(losses_list) if len(losses_list) > 0 else 0.0
+        loss_accum_tensor = torch.tensor([loss_accum], device=device)
+
+        if ddp:
+            # All_reduce to get the global validation loss (sum of all losses across GPUs)
+            torch.distributed.all_reduce(loss_accum_tensor, op=torch.distributed.ReduceOp.SUM)
+            loss_accum_tensor /= ddp_world_size  # Divide by world size to get the average
+
+        # Convert back to scalar for logging
+        loss_accum = loss_accum_tensor.item()
+
+    if log_path is not None and master_process:
         with open(log_path, 'a') as log_file:
             log_file.write(f"Validation Loss: {loss_accum}\n")
-
-    print(f"Validation Loss: {loss_accum}")
+    if master_process:
+        print(f"Validation Loss: {loss_accum}")
 
 if run_training:
     training(model, train_loader, val_loader, optimizer, grad_accum_steps, device, run_config, model_path, log_path)
 
 if run_validation:
-    validation(model, val_loader, optimizer, grad_accum_steps, device, run_config, model_path, log_path)
+    validation(model, val_loader, device, run_config, model_path, log_path)
 
 
 # if __name__ == '__main__':
