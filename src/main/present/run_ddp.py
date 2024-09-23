@@ -1,4 +1,3 @@
-
 import os
 import math
 import time
@@ -15,7 +14,28 @@ from skopt import gp_minimize
 from skopt.space import Real, Integer, Categorical
 from skopt.optimizer import Optimizer
 import joblib
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
+import json
+from torch.distributed import init_process_group, destroy_process_group
+
+ddp = int(os.environ.get('RANK', -1)) != -1
+if ddp:
+    assert torch.cuda.is_available(), "no gpu available"
+    init_process_group(backend='nccl')
+    ddp_rank = int(os.environ['RANK'])
+    ddp_local_rank = int(os.environ['LOCAL RANK'])
+    ddp_world_size = int(os.environ['WORLD SIZE'])
+    device = f'cuda:{ddp_local_rank}'
+    torch.cuda.set_device(device)
+    master_process = ddp_rank == 0
+else:
+    ddp_rank = 0
+    ddp_local_rank = 0
+    ddp_world_size = 1
+    master_process = True
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"device: {device}")
+
 
 
 torch.manual_seed(1337)  #pytorch seed
@@ -44,7 +64,7 @@ log_path = None #correct path set ltr if write == True
 debug_path = "debug.txt"
 
 iteration = 0
-existing_model_path = None #"../runs/full_TCEC_run_1/iters/state_dict_v175.pth"
+existing_model_path = "../runs/full_TCEC_run_1/iters/state_dict_v175.pth"
 pretrained_data = (10000, 4096, "TCEC_github_v2.db", 139) #(steps_completed, batch_size, db, iteration no of model we are loading)
 
 run_training = True
@@ -71,7 +91,7 @@ print(f"{iteration=}")
 
 
 train_steps = 30000
-n_limit = 20000
+n_limit = None
 n_workers = 12
 n1 = 0.8
 n2 = 0.1
@@ -88,7 +108,8 @@ class HyperParamConfig:
     n_layer: int = 8
     n_head: int = 8
     n_embd: int = 128
-    n_blocks_policyhead: int = 1
+    n_blocks_policyhead: int = 3
+    n_blocks_valuehead: int = 4
     dropout: float = 0.1
 
 class CausalSelfAttention(nn.Module):
@@ -163,8 +184,8 @@ class PolicyHead(nn.Module):
         self.fc = nn.Linear(model_config.n_embd, 1968)  # Fully connected layer to output a scalar
 
 
-    def forward(self, x, masked_indices=None):
-        print(f"{x.shape=}")
+    def forward(self, x, masked_indices):
+        B, T, C = x.shape
         x = self.fc(x)
         #x = self.masked_softmax(x, masked_indices)
         return x
@@ -195,18 +216,16 @@ class Transformer(nn.Module):
             ln_f = nn.LayerNorm(model_config.n_embd),
         ))
 
-    def forward(self, squares, special_tokens):
+    def forward(self, board_state_tensor, special_tokens_tensor):
         # idx is of shape (B, T)
-        B, T = squares.size()
+        B, T = board_state_tensor.size()
         assert T <= self.model_config.squares_size, f"Cannot forward sequence of length {T}, block size is only {self.model_config.squares_size}"
         # forward the token and position embeddings
         
-        pos = torch.arange(0, T, dtype=torch.long, device=squares.device) # shape (T)
+        pos = torch.arange(0, T, dtype=torch.long, device=board_state_tensor.device) # shape (T)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (T, n_embd)
-        tok_emb = self.transformer.wte(squares) # token embeddings of shape (B, T, n_embd)
-        print(f"{special_tokens.size()=}")
-        print(f"{self.model_config.special_size=}")
-        special_emb = special_tokens.unsqueeze(-1).expand(B, self.model_config.special_size, self.model_config.n_embd)
+        tok_emb = self.transformer.wte(board_state_tensor) # token embeddings of shape (B, T, n_embd)
+        special_emb = special_tokens_tensor.unsqueeze(-1).expand(B, self.model_config.special_size, self.model_config.n_embd)
         x = torch.cat((tok_emb + pos_emb, special_emb), dim=1)
         # forward the blocks of the transformer
         for block in self.transformer.h:
@@ -258,24 +277,59 @@ class Chess(nn.Module):
                 nn.init.constant_(module.bias, 0)
 
 
-    def forward(self, squares, special_tokens, legal_indices, p=None):
+    def forward(self, board_state_tensor, special_token_tensor, target_p_tensor=None,):
         # idx is of shape (B, T)
-        print(f"inside chess forward: {special_tokens.size()=}")
-        x = self.transformer(squares, special_tokens)
+        x = self.transformer(board_state_tensor, special_token_tensor)
         policy_input = x[:][0][:].squeeze()
         x_policy = self.policy_head(policy_input)
         
         loss = None
-        if p is not None and v is not None:
-            p = p.long()
-            # x_policy_softmax = F.softmax(x_policy, dim=1)
-            # correct_index_values = torch.full((x_policy_softmax.shape[0],), -1.0, dtype=torch.double).to(device)
-
-            # for b in range(x_policy_softmax.shape[0]):
-            #     correct_index_values[b] = x_policy_softmax[b][p[b]]
-
-            loss_p = F.cross_entropy(x_policy, p)
+        if target_p_tensor is not None:
+            target_p_tensor = target_p_tensor.long()
+            loss_p = F.cross_entropy(x_policy, target_p_tensor)
         return x_policy, loss_p
+    
+    def configure_optimizer(self, weight_decay, learning_rate, device):
+        param_dict = {pn: p for pn, p in self.named_parameters()}
+        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+        
+        # Separate parameters for weight decay (>= 2 dim) and no weight decay (< 2 dim)
+        decay_params = [p for n, p in param_dict.items() if p.dim >= 2]
+        no_decay_params = [p for n, p in param_dict.items() if p.dim < 2]
+        
+        # Policy head final layer and other layer-specific learning rate adjustments
+        policy_head_fc_params = list(self.policy_head.fc.parameters())
+        policy_head_fc_param_ids = {id(param) for param in policy_head_fc_params}
+        
+        policy_head_params = [param for name, param in self.named_parameters() 
+                            if 'policy_head' in name and id(param) not in policy_head_fc_param_ids]
+        
+        rest_of_model_params = [param for name, param in self.named_parameters() 
+                                if 'policy_head' not in name]
+        
+        # Combine weight decay and layer-specific learning rates
+        optim_groups = [
+            {'params': [p for p in decay_params if p in policy_head_fc_params], 'weight_decay': weight_decay, 'lr_type': -1},  # Final layer with weight decay
+            {'params': [p for p in no_decay_params if p in policy_head_fc_params], 'weight_decay': 0.0, 'lr_type': -1},  # Final layer without weight decay
+            
+            {'params': [p for p in decay_params if p in policy_head_params], 'weight_decay': weight_decay, 'lr_type': -2},  # Policy head with weight decay
+            {'params': [p for p in no_decay_params if p in policy_head_params], 'weight_decay': 0.0, 'lr_type': -2},  # Policy head without weight decay
+            
+            {'params': [p for p in decay_params if p in rest_of_model_params], 'weight_decay': weight_decay, 'lr_type': 1},  # Rest of model with weight decay
+            {'params': [p for p in no_decay_params if p in rest_of_model_params], 'weight_decay': 0.0, 'lr_type': 1}  # Rest of model without weight decay
+        ]
+        
+        # Optionally use fused AdamW if available
+        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+        use_fused = fused_available and 'cuda' in device
+        print(f"using adamW fused: {use_fused}")
+        
+        # Create the optimizer
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, fused=use_fused)
+        
+        return optimizer
+    
+
 
 class ChessDataset(Dataset):
     def __init__(self, db_path, n_limit, split, n1=0.8, n2=0.1, transform=None):
@@ -302,74 +356,46 @@ class ChessDataset(Dataset):
         return len(self.data[0])
 
     def __getitem__(self, idx):
-        x = self.data[0][idx]
-        p = self.data[1][idx]
-        special_tokens = self.data[2][idx]
-        y = self.data[3][idx]
+        board_state_tensor = self.data[0][idx]
+        special_token_tensor = self.data[1][idx]
+        target_p_tensor = self.data[2][idx]
 
-        if self.transform:
-            x = self.transform(x)
+        # if self.transform:
+        #     x = self.transform(x)
 
-        return x, p, special_tokens, y
+        return board_state_tensor, special_token_tensor, target_p_tensor
 
     def get_dataframe(self, db_path):
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         #query = f"SELECT move_index, legal_move_indices, x, evaluation FROM evaluations WHERE ABS(evaluation) > 1;"
-        query = f"SELECT move_index, legal_move_indices, x, evaluation, castling_rights, en_passant FROM evaluations{self.n_limit_query}" # WHERE n_pieces <= 12" #Change number of pieces per position
+        query = f"SELECT board_state, special_tokens, next_move, legal_moves, moves_left FROM evaluations{self.n_limit_query}" # WHERE n_pieces <= 12" #Change number of pieces per position
         cursor.execute(query)
         results = cursor.fetchall()
-        df = pd.DataFrame(results, columns=['move_index', 'legal_move_indices', 'x', 'evaluation', 'castling_rights', 'en_passant'])
-        df = df.drop_duplicates(subset=['move_index', 'legal_move_indices', 'x', 'evaluation', 'castling_rights', 'en_passant'], keep='first')
+        df = pd.DataFrame(results, columns=['board_state', 'next_move', 'legal_moves', 'moves_left'])
+        df = df.drop_duplicates(subset=['board_state', 'next_move', 'legal_moves', 'moves_left'], keep='first')
         print("fetched df")
         return df
 
     def convert_df(self, start_index, end_index):
-        x, p, special_tokens, y = [], [], [], [] #squares, policy vector (output), castling/en-passant rights, legal_moves_indices
-        max_length_y = 0
-
-        ave_legal_index_len = 0
-
-        #for _, row in self.df.iterrows():
+        board_state_list, special_token_list, target_p_list = [], [] #squares, policy vector (output), castling/en-passant rights, legal_moves_indices
+        #legal_moves_padding = self.df.iloc[start_index:end_index]['num_legal_moves'].max()
         for index, row in self.df.iloc[start_index:end_index].iterrows():
-            legal_indices = row['legal_move_indices'].split(',')[:-1]
-            legal_indices = [int(idx) for idx in legal_indices]
-            ave_legal_index_len += len(legal_indices)
-            if len(legal_indices) > max_length_y:
-                max_length_y = len(legal_indices)
-        ave_legal_index_len /= (end_index - start_index)
-        print(f"{ave_legal_index_len=}")
-        print(f"y padding value = {max_length_y}")
-        for index, row in self.df.iloc[start_index:end_index].iterrows():
-            x_squares = row['x'].split(',')[:-1]
-            x_squares = [0] + [int(xi) + 1 for xi in x_squares]
-
-            move_index = row['move_index']
-            legal_indices = row['legal_move_indices'].split(',')[:-1]
-            legal_indices = [int(idx) for idx in legal_indices]
-            castling_rights = row['castling_rights']
-            en_passant = row['en_passant']
-            castle_en_passant_rights = [0] * 13
-            if "K" in castling_rights:
-                castle_en_passant_rights[0] = 1
-            if "Q" in castling_rights:
-                castle_en_passant_rights[1] = 1
-            if "k" in castling_rights:
-                castle_en_passant_rights[2] = 1
-            if "q" in castling_rights:
-                castle_en_passant_rights[3] = 1
-            if en_passant != "-":
-                castle_en_passant_rights[4] = 1
-                castle_en_passant_rights[5 + (ord(en_passant[0]) - 97)] = 1 #set the file with the en_passant-able square to 1
-            
-
-            if len(legal_indices) < max_length_y:
-                legal_indices.extend([-1] * (max_length_y - len(legal_indices)))
-
-            x.append(x_squares)
-            p.append(move_index)
-            special_tokens.append(castle_en_passant_rights)
-            y.append(legal_indices)
+            board_state = json.loads(row[board_state])
+            special_tokens = json.loads(row['special_tokens'])
+            target_move_index = row['next_move']
+            legal_moves = json.loads(row['legal_moves'])
+            moves_left = row['moves_left']
+            target_p = [-10.0] * 1968
+            for move_index in legal_moves:
+                target_p[move_index] = 0.0
+            if target_move_index in legal_moves:
+                target_p[target_move_index] = 4.0 + (1.0 / moves_left)
+            else:
+                target_p[target_move_index] = -25.0
+            board_state_list.append(board_state)
+            special_token_list.append(special_tokens)
+            target_p_list.append(target_p)
 
             if index % 1000000 == 0:
                 print(f"processed {index} rows")
@@ -377,14 +403,11 @@ class ChessDataset(Dataset):
         print("finished iterating through all rows")
 
 
-        x = torch.tensor(x)
-        p = torch.tensor(p)
-        special_tokens = torch.tensor(special_tokens)
-        print("aaa)")
-        print(f"{special_tokens.size()=}")
-        y = torch.tensor(y)
+        board_state_tensor = torch.tensor(board_state_list)
+        special_token_tensor = torch.tensor(special_token_list)
+        target_p_tensor = torch.tensor(target_p_tensor)
 
-        return x, p, special_tokens, y
+        return board_state_tensor, special_token_tensor, target_p_tensor
 
 
 
@@ -393,14 +416,16 @@ class ChessDataset(Dataset):
 #indv batch size always 16 (or as much as GPU can handle)
 if run_training:
     train_dataset = ChessDataset(db_path, n_limit, 'train', n1=0.8, n2=0.1)
-    train_loader = DataLoader(train_dataset, batch_size=gpu_batch_size, shuffle=True, num_workers=n_workers)
+    train_sampler = DistributedSampler(train_dataset, num_replicas=ddp_world_size, rank=ddp_rank) if ddp else None
+    train_loader = DataLoader(train_dataset, batch_size=gpu_batch_size, sampler=train_sampler, shuffle=(train_sampler is None), num_workers=n_workers)
 if run_validation:
     val_dataset = ChessDataset(db_path, n_limit, 'val', n1=0.8, n2=0.1)
-    val_loader = DataLoader(val_dataset, batch_size=gpu_batch_size, shuffle=False, num_workers=n_workers)
+    val_sampler = DistributedSampler(val_dataset, num_replicas=ddp_world_size, rank=ddp_rank) if ddp else None
+    val_loader = DataLoader(val_dataset, batch_size=gpu_batch_size, sampler=val_sampler, shuffle=(val_sampler is None), num_workers=n_workers)
 if run_testing:
     test_dataset = ChessDataset(db_path, n_limit, 'test', n1=0.8, n2=0.1)
-    test_loader = DataLoader(test_dataset, batch_size=gpu_batch_size, shuffle=False, num_workers=n_workers)
-
+    test_sampler = DistributedSampler(test_dataset, num_replicas=ddp_world_size, rank=ddp_rank) if ddp else None
+    test_loader = DataLoader(test_dataset, batch_size=gpu_batch_size, sampler=test_sampler, shuffle=(test_sampler is None), num_workers=n_workers)
 
 
 
@@ -425,10 +450,12 @@ class Run_Config():
 class Chess_Config():
     squares_size: int = 65 # n_squares + 1 for special token
     special_size: int = 13
-    vocab_size: int = 14 # 1 special token, 1 empty square, 6 own pieces, 6 opponent pieces, 4 castling rights, 9 en_passant (1st for availabiltiy, other 8 to indicate file)
+    vocab_size: int = 27 # 1 special token, 1 empty square, 6 own pieces, 6 opponent pieces, 4 castling rights, 9 en_passant (1st for availabiltiy, other 8 to indicate file)
     n_layer: int = HyperParamConfig.n_layer # [16, 24, 32]
     n_head: int = HyperParamConfig.n_head # [8, 16, 32]
     n_embd: int = HyperParamConfig.n_embd # [128, 256, 512]]
+    n_blocks_policyhead: int = HyperParamConfig.n_blocks_policyhead # [2,3,4]
+    n_blocks_valuehead: int = HyperParamConfig.n_blocks_valuehead # [3,4,5]
     dropout: float = HyperParamConfig.dropout # [ 0.2, 0.3, 0.4, 0.5]
 
 torch.set_float32_matmul_precision("high")
@@ -443,7 +470,8 @@ policy_params = sum(p.numel() for name, p in model.named_parameters() if 'policy
 print(f"Total number of parameters in the policy head: {policy_params}")
 
 model = torch.compile(model)
-
+if ddp:
+    model = DDP(model, device_ids=[ddp_local_rank])
 
 
 
@@ -467,25 +495,12 @@ def get_lr(it):
 
 total_batch_size = run_config.total_batch_size # used for alphazero
 batch_size = run_config.batch_size
-assert total_batch_size % batch_size == 0
-grad_accum_steps = total_batch_size // batch_size
+assert total_batch_size % (batch_size * ddp_world_size) == 0
+grad_accum_steps = total_batch_size // (batch_size * ddp_world_size)
 
 
-policy_head_fc_params = list(model.policy_head.fc.parameters())
-policy_head_fc_param_ids = {id(param) for param in policy_head_fc_params}
-
-policy_head_params = [param for name, param in model.named_parameters() if 'policy_head' in name and id(param) not in policy_head_fc_param_ids]
-
-
-rest_of_model_params = [param for name, param in model.named_parameters() if 'policy_head' not in name]
-
-params = [
-    {'params': policy_head_fc_params, 'lr_type': -1},  # Final layer of policy head
-    {'params': policy_head_params, 'lr_type': -2},  # Entire policy head except final layer
-    {'params': rest_of_model_params, 'lr_type': 1}  # Rest of the model
-]
-
-optimizer = torch.optim.AdamW(params, lr=max_lr, weight_decay=run_config.adamw_weight_decay) #no longer mode.parameters()
+optimizer = model.configure_optimizer(weight_decay=run_config.adamw_weight_decay, learning_rate=max_lr, device=device)
+#optimizer = torch.optim.AdamW(params, lr=max_lr, weight_decay=run_config.adamw_weight_decay) #no longer mode.parameters()
 
 
 if save:
@@ -508,38 +523,42 @@ if write:
         log_file.write(f"n_layer: {HyperParamConfig.n_layer}\n")
         log_file.write(f"n_head: {HyperParamConfig.n_head}\n")
         log_file.write(f"n_embd: {HyperParamConfig.n_embd}\n")
+        log_file.write(f"n_blocks_policyhead: {HyperParamConfig.n_blocks_policyhead}\n")
+        log_file.write(f"n_blocks_valuehead: {HyperParamConfig.n_blocks_valuehead}\n")
         log_file.write(f"dropout: {HyperParamConfig.dropout}\n")
         log_file.write(f"total no of parameters: {total_params}\n")
 
 def training(model, train_loader, val_loader, optimizer, grad_accum_steps, device, run_config, model_path, log_path):
     train_iter = iter(train_loader)
-    consecutive_counter = 0
-
     loss_storage = {}
+    scaler = torch.cuda.amp.GradScaler()
     print("starting training")
     for step in range(run_config.total_steps):
         optimizer.zero_grad(set_to_none=True)
         losses_list = []
         
+        if ddp and isinstance(train_loader.sampler, torch.utils.data.DistributedSampler):
+            train_loader.sampler.set_epoch(step)
+            
+
         for micro_step in range(grad_accum_steps):
             try:
-                data, p, special_tokens, legal_indices = next(train_iter)
-                print(f"output of train_iter: {special_tokens.size()=}")
+                board_state_tensor, special_token_tensor, target_p_tensor = next(train_iter)
             except StopIteration:
                 train_iter = iter(train_loader)
-                data, p, special_tokens, legal_indices = next(train_iter)
+                board_state_tensor, special_token_tensor, target_p_tensor = next(train_iter)
 
-            data, p, special_tokens, legal_indices = data.to(device), p.to(device), special_tokens.to(device), legal_indices.to(device)
+            board_state_tensor, special_token_tensor, target_p_tensor = board_state_tensor.to(device), special_token_tensor.to(device), target_p_tensor.to(device)
 
             # Evaluate the loss
-            with torch.autocast(device_type=device, dtype=torch.bfloat16):
-                x_policy, loss = model(data, special_tokens, legal_indices, p)
+            with torch.cuda.amp.autocast():
+                x_policy, loss = model(board_state_tensor, special_token_tensor, target_p_tensor)
             if torch.isnan(loss):
                 print(f"{loss=}")
             loss = loss / grad_accum_steps
 
             losses_list.append(loss.item())
-            loss.backward()
+            scaler.scale(loss).backward()
             
         loss_accum = sum(losses_list)
         if math.isnan(loss_accum):
@@ -548,7 +567,7 @@ def training(model, train_loader, val_loader, optimizer, grad_accum_steps, devic
                     for i in range(len(losses_list)):
                         file.write(f"{losses_list[i]}\n")
             import sys; sys.exit(0)
-        
+        scaler.unscale_(optimizer)
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), run_config.gradient_clipping)
         lr = get_lr(step)
         for param_group in optimizer.param_groups:
@@ -558,67 +577,69 @@ def training(model, train_loader, val_loader, optimizer, grad_accum_steps, devic
                 param_group['lr'] = lr * 5e-1  # Moderately smaller learning rate for entire policy and value heads
             else:
                 param_group['lr'] = lr  # Default learning rate for the rest of the model
+        scaler.step(optimizer)
+        scaler.update()
 
-        optimizer.step()
-        if log_path is not None:
+        if log_path is not None and master_process:
             loss_storage[step] = loss_accum
 
         
-        if step % 1000 == 0 or step == run_config.total_steps - 1:
+        if (step % 1000 == 0 or step == run_config.total_steps - 1) and master_process:
             if model_path is not None:
                 torch.save(model.state_dict(), model_path)
                 print(f"Model parameters saved to {model_path} at step {step}")
             if log_path is not None:
                 with open(log_path, "a") as file:
                     for key, value in loss_storage.items():
-                        file.write(f"step={key} | loss={value[0]}\n")
+                        file.write(f"step={key} | loss={value}\n")
                     file.write(f"Model parameters saved to {model_path} at step {step}\n")
                 loss_storage = {}
-        if step % 1000 == 999:
-            validation(model, val_loader, optimizer, grad_accum_steps, device, run_config, model_path, log_path)
         print(f"step={step} | loss={loss_accum}")
-        
-        
+        if step % 1000 == 999: #called on all processes, not just master process
+            validation(model, val_loader, optimizer, grad_accum_steps, device, run_config, model_path, log_path)
+    if master_process:
+        torch.save(model.state_dict(), model_path)
+        print(f"Model parameters saved to {model_path}")
 
-
-    torch.save(model.state_dict(), model_path)
-    print(f"Model parameters saved to {model_path}")
-
-def validation(model, train_loader, optimizer, grad_accum_steps, device, run_config, model_path, log_path):
+def validation(model, val_loader, device, run_config, model_path, log_path):
     model.eval()
-    val_loss = 0
     losses_list = []
     val_iter = iter(val_loader)
     print("starting validation")
     with torch.no_grad():
         while True:
             try:
-                data, p, v, legal_indices = next(val_iter)
+                board_state_tensor, special_token_tensor, target_p_tensor = next(val_iter)
             except StopIteration:
                 break
-            data, p, v, legal_indices = data.to(device), p.to(device), v.to(device), legal_indices.to(device)
+            board_state_tensor, special_token_tensor, target_p_tensor = board_state_tensor.to(device), special_token_tensor.to(device), target_p_tensor.to(device)
 
             # Evaluate the loss
-            x_policy, x_value, loss_p, loss_v = model(data, legal_indices, p, v)
-            loss = loss_p + loss_v
+            x_policy, loss = model(board_state_tensor, special_token_tensor, target_p_tensor)
             losses_list.append(loss.item())
-        loss_accum = sum(losses_list)/len(losses_list)
-    if log_path is not None:
+        loss_accum = sum(losses_list)/len(losses_list) if len(losses_list) > 0 else 0.0
+        loss_accum_tensor = torch.tensor([loss_accum], device=device)
+
+        if ddp:
+            # All_reduce to get the global validation loss (sum of all losses across GPUs)
+            torch.distributed.all_reduce(loss_accum_tensor, op=torch.distributed.ReduceOp.SUM)
+            loss_accum_tensor /= ddp_world_size  # Divide by world size to get the average
+
+        # Convert back to scalar for logging
+        loss_accum = loss_accum_tensor.item()
+
+    if log_path is not None and master_process:
         with open(log_path, 'a') as log_file:
             log_file.write(f"Validation Loss: {loss_accum}\n")
-
-    print(f"Validation Loss: {loss_accum}")
+    if master_process:
+        print(f"Validation Loss: {loss_accum}")
 
 if run_training:
     training(model, train_loader, val_loader, optimizer, grad_accum_steps, device, run_config, model_path, log_path)
 
 if run_validation:
-    validation(model, val_loader, optimizer, grad_accum_steps, device, run_config, model_path, log_path)
+    validation(model, val_loader, device, run_config, model_path, log_path)
 
 
 # if __name__ == '__main__':
 #     main()
-
-
-
-
