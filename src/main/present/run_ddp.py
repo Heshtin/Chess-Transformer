@@ -288,6 +288,48 @@ class Chess(nn.Module):
             target_p_tensor = target_p_tensor.long()
             loss_p = F.cross_entropy(x_policy, target_p_tensor)
         return x_policy, loss_p
+    
+    def configure_optimizer(self, weight_decay, learning_rate, device):
+        param_dict = {pn: p for pn, p in self.named_parameters()}
+        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+        
+        # Separate parameters for weight decay (>= 2 dim) and no weight decay (< 2 dim)
+        decay_params = [p for n, p in param_dict.items() if p.dim >= 2]
+        no_decay_params = [p for n, p in param_dict.items() if p.dim < 2]
+        
+        # Policy head final layer and other layer-specific learning rate adjustments
+        policy_head_fc_params = list(self.policy_head.fc.parameters())
+        policy_head_fc_param_ids = {id(param) for param in policy_head_fc_params}
+        
+        policy_head_params = [param for name, param in self.named_parameters() 
+                            if 'policy_head' in name and id(param) not in policy_head_fc_param_ids]
+        
+        rest_of_model_params = [param for name, param in self.named_parameters() 
+                                if 'policy_head' not in name]
+        
+        # Combine weight decay and layer-specific learning rates
+        optim_groups = [
+            {'params': [p for p in decay_params if p in policy_head_fc_params], 'weight_decay': weight_decay, 'lr_type': -1},  # Final layer with weight decay
+            {'params': [p for p in no_decay_params if p in policy_head_fc_params], 'weight_decay': 0.0, 'lr_type': -1},  # Final layer without weight decay
+            
+            {'params': [p for p in decay_params if p in policy_head_params], 'weight_decay': weight_decay, 'lr_type': -2},  # Policy head with weight decay
+            {'params': [p for p in no_decay_params if p in policy_head_params], 'weight_decay': 0.0, 'lr_type': -2},  # Policy head without weight decay
+            
+            {'params': [p for p in decay_params if p in rest_of_model_params], 'weight_decay': weight_decay, 'lr_type': 1},  # Rest of model with weight decay
+            {'params': [p for p in no_decay_params if p in rest_of_model_params], 'weight_decay': 0.0, 'lr_type': 1}  # Rest of model without weight decay
+        ]
+        
+        # Optionally use fused AdamW if available
+        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+        use_fused = fused_available and 'cuda' in device
+        print(f"using adamW fused: {use_fused}")
+        
+        # Create the optimizer
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, fused=use_fused)
+        
+        return optimizer
+    
+
 
 class ChessDataset(Dataset):
     def __init__(self, db_path, n_limit, split, n1=0.8, n2=0.1, transform=None):
@@ -457,21 +499,8 @@ assert total_batch_size % (batch_size * ddp_world_size) == 0
 grad_accum_steps = total_batch_size // (batch_size * ddp_world_size)
 
 
-policy_head_fc_params = list(model.policy_head.fc.parameters())
-policy_head_fc_param_ids = {id(param) for param in policy_head_fc_params}
-
-policy_head_params = [param for name, param in model.named_parameters() if 'policy_head' in name and id(param) not in policy_head_fc_param_ids]
-
-
-rest_of_model_params = [param for name, param in model.named_parameters() if 'policy_head' not in name]
-
-params = [
-    {'params': policy_head_fc_params, 'lr_type': -1},  # Final layer of policy head
-    {'params': policy_head_params, 'lr_type': -2},  # Entire policy head except final layer
-    {'params': rest_of_model_params, 'lr_type': 1}  # Rest of the model
-]
-
-optimizer = torch.optim.AdamW(params, lr=max_lr, weight_decay=run_config.adamw_weight_decay) #no longer mode.parameters()
+optimizer = model.configure_optimizer(weight_decay=run_config.adamw_weight_decay, learning_rate=max_lr, device=device)
+#optimizer = torch.optim.AdamW(params, lr=max_lr, weight_decay=run_config.adamw_weight_decay) #no longer mode.parameters()
 
 
 if save:
