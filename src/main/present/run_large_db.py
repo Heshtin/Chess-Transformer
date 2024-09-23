@@ -1,4 +1,3 @@
-
 import os
 import math
 import time
@@ -16,6 +15,7 @@ from skopt.space import Real, Integer, Categorical
 from skopt.optimizer import Optimizer
 import joblib
 from torch.utils.data import Dataset, DataLoader
+import json
 
 
 torch.manual_seed(1337)  #pytorch seed
@@ -44,7 +44,7 @@ log_path = None #correct path set ltr if write == True
 debug_path = "debug.txt"
 
 iteration = 0
-existing_model_path = None #"../runs/full_TCEC_run_1/iters/state_dict_v175.pth"
+existing_model_path = "../runs/full_TCEC_run_1/iters/state_dict_v175.pth"
 pretrained_data = (10000, 4096, "TCEC_github_v2.db", 139) #(steps_completed, batch_size, db, iteration no of model we are loading)
 
 run_training = True
@@ -71,7 +71,7 @@ print(f"{iteration=}")
 
 
 train_steps = 30000
-n_limit = 20000
+n_limit = None
 n_workers = 12
 n1 = 0.8
 n2 = 0.1
@@ -88,7 +88,8 @@ class HyperParamConfig:
     n_layer: int = 8
     n_head: int = 8
     n_embd: int = 128
-    n_blocks_policyhead: int = 1
+    n_blocks_policyhead: int = 3
+    n_blocks_valuehead: int = 4
     dropout: float = 0.1
 
 class CausalSelfAttention(nn.Module):
@@ -163,8 +164,8 @@ class PolicyHead(nn.Module):
         self.fc = nn.Linear(model_config.n_embd, 1968)  # Fully connected layer to output a scalar
 
 
-    def forward(self, x, masked_indices=None):
-        print(f"{x.shape=}")
+    def forward(self, x, masked_indices):
+        B, T, C = x.shape
         x = self.fc(x)
         #x = self.masked_softmax(x, masked_indices)
         return x
@@ -195,18 +196,16 @@ class Transformer(nn.Module):
             ln_f = nn.LayerNorm(model_config.n_embd),
         ))
 
-    def forward(self, squares, special_tokens):
+    def forward(self, board_state_tensor, special_tokens_tensor):
         # idx is of shape (B, T)
-        B, T = squares.size()
+        B, T = board_state_tensor.size()
         assert T <= self.model_config.squares_size, f"Cannot forward sequence of length {T}, block size is only {self.model_config.squares_size}"
         # forward the token and position embeddings
         
-        pos = torch.arange(0, T, dtype=torch.long, device=squares.device) # shape (T)
+        pos = torch.arange(0, T, dtype=torch.long, device=board_state_tensor.device) # shape (T)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (T, n_embd)
-        tok_emb = self.transformer.wte(squares) # token embeddings of shape (B, T, n_embd)
-        print(f"{special_tokens.size()=}")
-        print(f"{self.model_config.special_size=}")
-        special_emb = special_tokens.unsqueeze(-1).expand(B, self.model_config.special_size, self.model_config.n_embd)
+        tok_emb = self.transformer.wte(board_state_tensor) # token embeddings of shape (B, T, n_embd)
+        special_emb = special_tokens_tensor.unsqueeze(-1).expand(B, self.model_config.special_size, self.model_config.n_embd)
         x = torch.cat((tok_emb + pos_emb, special_emb), dim=1)
         # forward the blocks of the transformer
         for block in self.transformer.h:
@@ -258,10 +257,9 @@ class Chess(nn.Module):
                 nn.init.constant_(module.bias, 0)
 
 
-    def forward(self, squares, special_tokens, legal_indices, p=None):
+    def forward(self, board_state_tensor, special_token_tensor, target_p=None,):
         # idx is of shape (B, T)
-        print(f"inside chess forward: {special_tokens.size()=}")
-        x = self.transformer(squares, special_tokens)
+        x = self.transformer(board_state_tensor, special_token_tensor)
         policy_input = x[:][0][:].squeeze()
         x_policy = self.policy_head(policy_input)
         
@@ -316,60 +314,33 @@ class ChessDataset(Dataset):
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         #query = f"SELECT move_index, legal_move_indices, x, evaluation FROM evaluations WHERE ABS(evaluation) > 1;"
-        query = f"SELECT move_index, legal_move_indices, x, evaluation, castling_rights, en_passant FROM evaluations{self.n_limit_query}" # WHERE n_pieces <= 12" #Change number of pieces per position
+        query = f"SELECT board_state, special_tokens, next_move, legal_moves, moves_left FROM evaluations{self.n_limit_query}" # WHERE n_pieces <= 12" #Change number of pieces per position
         cursor.execute(query)
         results = cursor.fetchall()
-        df = pd.DataFrame(results, columns=['move_index', 'legal_move_indices', 'x', 'evaluation', 'castling_rights', 'en_passant'])
-        df = df.drop_duplicates(subset=['move_index', 'legal_move_indices', 'x', 'evaluation', 'castling_rights', 'en_passant'], keep='first')
+        df = pd.DataFrame(results, columns=['board_state', 'next_move', 'legal_moves', 'moves_left'])
+        df = df.drop_duplicates(subset=['board_state', 'next_move', 'legal_moves', 'moves_left'], keep='first')
         print("fetched df")
         return df
 
     def convert_df(self, start_index, end_index):
-        x, p, special_tokens, y = [], [], [], [] #squares, policy vector (output), castling/en-passant rights, legal_moves_indices
-        max_length_y = 0
-
-        ave_legal_index_len = 0
-
-        #for _, row in self.df.iterrows():
+        board_state_list, special_token_list, target_p_list = [], [] #squares, policy vector (output), castling/en-passant rights, legal_moves_indices
+        #legal_moves_padding = self.df.iloc[start_index:end_index]['num_legal_moves'].max()
         for index, row in self.df.iloc[start_index:end_index].iterrows():
-            legal_indices = row['legal_move_indices'].split(',')[:-1]
-            legal_indices = [int(idx) for idx in legal_indices]
-            ave_legal_index_len += len(legal_indices)
-            if len(legal_indices) > max_length_y:
-                max_length_y = len(legal_indices)
-        ave_legal_index_len /= (end_index - start_index)
-        print(f"{ave_legal_index_len=}")
-        print(f"y padding value = {max_length_y}")
-        for index, row in self.df.iloc[start_index:end_index].iterrows():
-            x_squares = row['x'].split(',')[:-1]
-            x_squares = [0] + [int(xi) + 1 for xi in x_squares]
-
-            move_index = row['move_index']
-            legal_indices = row['legal_move_indices'].split(',')[:-1]
-            legal_indices = [int(idx) for idx in legal_indices]
-            castling_rights = row['castling_rights']
-            en_passant = row['en_passant']
-            castle_en_passant_rights = [0] * 13
-            if "K" in castling_rights:
-                castle_en_passant_rights[0] = 1
-            if "Q" in castling_rights:
-                castle_en_passant_rights[1] = 1
-            if "k" in castling_rights:
-                castle_en_passant_rights[2] = 1
-            if "q" in castling_rights:
-                castle_en_passant_rights[3] = 1
-            if en_passant != "-":
-                castle_en_passant_rights[4] = 1
-                castle_en_passant_rights[5 + (ord(en_passant[0]) - 97)] = 1 #set the file with the en_passant-able square to 1
-            
-
-            if len(legal_indices) < max_length_y:
-                legal_indices.extend([-1] * (max_length_y - len(legal_indices)))
-
-            x.append(x_squares)
-            p.append(move_index)
-            special_tokens.append(castle_en_passant_rights)
-            y.append(legal_indices)
+            board_state = json.loads(row[board_state])
+            special_tokens = json.loads(row['special_tokens'])
+            target_move_index = row['next_move']
+            legal_moves = json.loads(row['legal_moves'])
+            moves_left = row['moves_left']
+            target_p = [-10.0] * 1968
+            for move_index in legal_moves:
+                target_p[move_index] = 0.0
+            if target_move_index in legal_moves:
+                target_p[target_move_index] = 4.0 + (1.0 / moves_left)
+            else:
+                target_p[target_move_index] = -25.0
+            board_state_list.append(board_state)
+            special_token_list.append(special_tokens)
+            target_p_list.append(target_p)
 
             if index % 1000000 == 0:
                 print(f"processed {index} rows")
@@ -377,14 +348,11 @@ class ChessDataset(Dataset):
         print("finished iterating through all rows")
 
 
-        x = torch.tensor(x)
-        p = torch.tensor(p)
-        special_tokens = torch.tensor(special_tokens)
-        print("aaa)")
-        print(f"{special_tokens.size()=}")
-        y = torch.tensor(y)
+        board_state_tensor = torch.tensor(board_state_list)
+        special_token_tensor = torch.tensor(special_token_list)
+        target_p_tensor = torch.tensor(target_p_tensor)
 
-        return x, p, special_tokens, y
+        return board_state_tensor, special_token_tensor, target_p_tensor
 
 
 
@@ -425,10 +393,12 @@ class Run_Config():
 class Chess_Config():
     squares_size: int = 65 # n_squares + 1 for special token
     special_size: int = 13
-    vocab_size: int = 14 # 1 special token, 1 empty square, 6 own pieces, 6 opponent pieces, 4 castling rights, 9 en_passant (1st for availabiltiy, other 8 to indicate file)
+    vocab_size: int = 27 # 1 special token, 1 empty square, 6 own pieces, 6 opponent pieces, 4 castling rights, 9 en_passant (1st for availabiltiy, other 8 to indicate file)
     n_layer: int = HyperParamConfig.n_layer # [16, 24, 32]
     n_head: int = HyperParamConfig.n_head # [8, 16, 32]
     n_embd: int = HyperParamConfig.n_embd # [128, 256, 512]]
+    n_blocks_policyhead: int = HyperParamConfig.n_blocks_policyhead # [2,3,4]
+    n_blocks_valuehead: int = HyperParamConfig.n_blocks_valuehead # [3,4,5]
     dropout: float = HyperParamConfig.dropout # [ 0.2, 0.3, 0.4, 0.5]
 
 torch.set_float32_matmul_precision("high")
@@ -508,6 +478,8 @@ if write:
         log_file.write(f"n_layer: {HyperParamConfig.n_layer}\n")
         log_file.write(f"n_head: {HyperParamConfig.n_head}\n")
         log_file.write(f"n_embd: {HyperParamConfig.n_embd}\n")
+        log_file.write(f"n_blocks_policyhead: {HyperParamConfig.n_blocks_policyhead}\n")
+        log_file.write(f"n_blocks_valuehead: {HyperParamConfig.n_blocks_valuehead}\n")
         log_file.write(f"dropout: {HyperParamConfig.dropout}\n")
         log_file.write(f"total no of parameters: {total_params}\n")
 
@@ -524,7 +496,6 @@ def training(model, train_loader, val_loader, optimizer, grad_accum_steps, devic
         for micro_step in range(grad_accum_steps):
             try:
                 data, p, special_tokens, legal_indices = next(train_iter)
-                print(f"output of train_iter: {special_tokens.size()=}")
             except StopIteration:
                 train_iter = iter(train_loader)
                 data, p, special_tokens, legal_indices = next(train_iter)
@@ -533,7 +504,7 @@ def training(model, train_loader, val_loader, optimizer, grad_accum_steps, devic
 
             # Evaluate the loss
             with torch.autocast(device_type=device, dtype=torch.bfloat16):
-                x_policy, loss = model(data, special_tokens, legal_indices, p)
+                x_policy, loss = model(data, legal_indices, p, special_tokens)
             if torch.isnan(loss):
                 print(f"{loss=}")
             loss = loss / grad_accum_steps
@@ -618,7 +589,3 @@ if run_validation:
 
 # if __name__ == '__main__':
 #     main()
-
-
-
-
