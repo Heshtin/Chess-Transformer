@@ -152,9 +152,9 @@ def flip_uci(uci_move_string):
 
 print(flip_uci("e1g1"))
 print(fen_to_vector("2kr1bnr/p1p3pp/2nppq2/4p3/Pp1PP3/2N2N1P/1PPB1PP1/R2Q1RK1 b Kq - 0 1"))
-print(fen_to_vector_2("2kr1bnr/p1p3pp/2nppq2/4p3/Pp1PP3/2N2N1P/1PPB1PP1/R2Q1RK1 b Kq a3 0 1"))
-print(fen_to_vector("2kr1bnr/p1p3pp/2nppq2/Pp2p3/3PP3/2N2N1P/1PPB1PP1/R2Q1RK1 w Qk b6 0 1"))
-print(fen_to_vector_2("2kr1bnr/p1p3pp/2nppq2/Pp2p3/3PP3/2N2N1P/1PPB1PP1/R2Q1RK1 w Qk b6 0 1"))
+#print(fen_to_vector_2("2kr1bnr/p1p3pp/2nppq2/4p3/Pp1PP3/2N2N1P/1PPB1PP1/R2Q1RK1 b Kq a3 0 1"))
+print(fen_to_vector("2kr1bnr/p1p3pp/2nppq2/Pp2p3/3PP3/2N2N1P/1PPB1PP1/R2Q1RK1 b Qk a3 0 1"))
+#print(fen_to_vector_2("2kr1bnr/p1p3pp/2nppq2/Pp2p3/3PP3/2N2N1P/1PPB1PP1/R2Q1RK1 w Qk b6 0 1"))
 
 
 
