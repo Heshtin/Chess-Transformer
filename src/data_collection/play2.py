@@ -35,11 +35,9 @@ def fen_to_vector(fen):
     if en_passant == "-":
         special_tokens.extend([0] * 9)
     else:
-        special_tokens.append(1)
         file_index = ord(en_passant[0]) - 97
-        special_tokens.extend([0] * file_index)
-        special_tokens.append(1)
-        special_tokens.extend([0] * (7 - file_index))
+        special_tokens.extend([1] + [0] * file_index + [1] + [0] * (7 - file_index))
+    
 
     json_position = json.dumps(position)
     json_special_tokens = json.dumps(special_tokens)
