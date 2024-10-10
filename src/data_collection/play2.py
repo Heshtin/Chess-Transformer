@@ -130,13 +130,19 @@ def fen_to_vector(fen):
 
 #     return position[:-1], turn
 
+# def flip_uci(uci_move_string):
+#     out = ""
+#     out+=uci_move_string[0]
+#     out+=str(9 - int(uci_move_string[1]))
+#     out+=uci_move_string[2]
+#     out+=str(9 - int(uci_move_string[3]))
+#     return out
+
 def flip_uci(uci_move_string):
-    out = ""
-    out+=uci_move_string[0]
-    out+=str(9 - int(uci_move_string[1]))
-    out+=uci_move_string[2]
-    out+=str(9 - int(uci_move_string[3]))
-    return out
+    uci_move_list = list(uci_move_string)
+    uci_move_list[1]=str(9 - int(uci_move_list[1]))
+    uci_move_list[3]=str(9 - int(uci_move_list[3]))
+    return ''.join(uci_move_list)
 
 
 
@@ -148,10 +154,10 @@ def flip_uci(uci_move_string):
 
 
 
-print(flip_uci("e1g1"))
-print(fen_to_vector("2kr1bnr/p1p3pp/2nppq2/4p3/Pp1PP3/2N2N1P/1PPB1PP1/R2Q1RK1 b Kq - 0 1"))
+print(flip_uci("f7f8q"))
+#print(fen_to_vector("2kr1bnr/p1p3pp/2nppq2/4p3/Pp1PP3/2N2N1P/1PPB1PP1/R2Q1RK1 b Kq - 0 1"))
 #print(fen_to_vector_2("2kr1bnr/p1p3pp/2nppq2/4p3/Pp1PP3/2N2N1P/1PPB1PP1/R2Q1RK1 b Kq a3 0 1"))
-print(fen_to_vector("2kr1bnr/p1p3pp/2nppq2/Pp2p3/3PP3/2N2N1P/1PPB1PP1/R2Q1RK1 b Qk a3 0 1"))
+#print(fen_to_vector("2kr1bnr/p1p3pp/2nppq2/Pp2p3/3PP3/2N2N1P/1PPB1PP1/R2Q1RK1 b Qk a3 0 1"))
 #print(fen_to_vector_2("2kr1bnr/p1p3pp/2nppq2/Pp2p3/3PP3/2N2N1P/1PPB1PP1/R2Q1RK1 w Qk b6 0 1"))
 
 
