@@ -28,7 +28,7 @@ The model architecture extends and also slightly modifies the vision transformer
 
 Each input consists of 84 tokens. The first token is a CLS token for aggregating all the information from the attention blocks. After the forward pass through the transformer, this CLS token alone is passed through a final linear layer fc1 to output a vector that undergoes softmax to produce a policy vector that is a probability distribution across all 1968 possible uci moves in chess (possible moves, not just legal moves).
 
-The next 64 tokens represent the contents of each square. There are 13 possible states for each square (1 for empty, 6 for "own" piece and 6 for "enemy" piece). Do note that we use "own" and "enemy" piece as opposed to black and white, and as such when it is black's turn we flip the board vertically (but not horizontally). This is different from the paper where they simply used a binary token to encode whose move it is. (although flipping the board is already a well-explored optimization technique and not a movel approach of this paper). Each of these 13 states have their own embedding. We also use positional embeddings. We use relative rather than absolute positional embeddings following work by the Leela Chess Zero team (https://arxiv.org/html/2409.12272v1).
+The next 64 tokens represent the contents of each square. There are 13 possible states for each square (1 for empty, 6 for white piece and 6 for black pieces). We considered simplifying the problem by simply labelling them as "player" and "enemy"pieces to take advantage of symmetry, and flip the board whenever it is blacks turn to be consistent with this idea, as has been explored in previous work. However, since we envision that without explicit search the model should instead conduct its own implicit search, the model will need to be fully informed about how it's opponent pieces move. However, this is not possible if we utilise symmetry, since we cannot tell the model that enemy pieces move in the same way as it's own.  As such, we used a binary token to encode whose move it is. We will test both approaches (flip and no flip). If no flip performs the same or better, it provides proof of an implicit search rather than just pattern recognition since no flip means the problem is of greater complexity. Each of these 13 states have their own embedding. We also use positional embeddings. We use relative rather than absolute positional embeddings following work by the Leela Chess Zero team (https://arxiv.org/html/2409.12272v1).
 
 The next 4 tokens are binary tokens to represent castling rights. The next 9 tokens are also binary tokens used to encode en passant rights, with the first token representing whether en passant is available or not, and the next 8 to encode which of the 8 files the en passant square is on. The first of these tokens is a form of redundancy that is introduced as a way to provide a stronger signal that we hope helps the model learn about en passant more quickly, as we fear the rarity of this move being played may make it difficult to learn.
 
@@ -38,7 +38,7 @@ The next token corresponds to the number of half moves. We define another embedd
 
 half_move_token = (number of half moves / 50.0) * half_move_embedding
 
-However, linearly scaling using (number of half moves / 50.0) may not be the most optimal approach. The number of half moves mainly convery information regarding the number of moves left until a draw is declared if no captures or pawn moves are made. The significance of this is not linearly related to the number of half moves. For example, the difference in positional significance between 9 and 19 half moves isnt much, but it is a lot for 39 and 49, since for 49 half moves the position is drawn on the very next move. This may lead us to use an exponential relationship. However, the half move counter can also help indicate other information like whether the position is fixed or a fortress is present, which may not be the most ideal. Hence, our model aims to use a polynomial of a small degree (8) with learnable coefficients, where x = (number of half moves / 50.0). This allows the model itself to determine the most optimal relationship between positional significance and number of half moves.
+However, linearly scaling using (number of half moves / 50.0) may not be the most optimal approach. The number of half moves mainly convery information regarding the number of moves left until a draw is declared if no captures or pawn moves are made. The significance of this is not linearly related to the number of half moves. For example, the difference in positional significance between 9 and 19 half moves isnt much, but it is a lot for 39 and 49, since for 49 half moves the position is drawn on the very next move. This may lead us to use an exponential relationship. However, the half move counter can also help indicate other information like whether the position is fixed or a fortress is present, which may not be the most ideal. Hence, our model aims to use a polynomial of a small degree (8) with learnable coefficients, where x = (number of half moves / 50.0). This allows the model itself to determine the most optimal relationship between positional significance and number of half moves. We will also consider passing the scalar through ReLU to prevent negative values, as this would cause the direction of the embedding to flip which could potentially confuse the model.
 
 The next token corresponds to the number of full moves. Rather than simply scaling a single defined embedding, we scale a smaller embedding with 16 dimensions then matrix multiply with a 16 x n_token_embd matrix, as follows:
 
@@ -64,11 +64,6 @@ The purpose of these additional 3 tokens and fc2 is to allow the model to recons
 This move-refinement mechanism while maintaining explicit search is the main novelty that this research is introducing to the study of chess engines.
 
 Finally, we believe the use of the 3_fold_repitition embeddings give the engine an idea of the repitition of the current position and the future positions of only the moves being considered introduces a stronger way to deal with the three-fold repition rule. Of course it doesnt give the model the complete information about the game history, and also doesnt include consideration for all the legal moves that werent considered, since including the move embeddings for all possible uci moves in the input would be too computationally expensive. However, we feel that this approach still gives sufficient information to make the most informed decision in most cases. The use of 3 fold repetition embeddings as described is another novelty of this research.
-
-
-
-
-
 
 The architecture for the attention is similar to those used in LLMs. We use 8 attention heads and the MLP block expands the embedding dimension to 4 times its initial value. 
 
@@ -104,14 +99,28 @@ The architecture for the attention is similar to those used in LLMs. We use 8 at
 
 
 
+## Datasets
+We employ curriculum learning. We feel that this would be better than directly exposing the model to very complex patterns, while being much less computationally expensive than reinforcement learning. Datasets are generated from game shards on lichess.com. The moves played in the game are taken to be the target move. We take the average rating of the players to determine which rating range they fall into, and only use games with time controls of at least 15 minutes to ensure data quality is not low.
 
-We are choosing to use a transformer model as opposed to a CNN. This is because we believe the long-distance communication in self-attention will better be able to capture the patterns in the board state. It also allow for easier comparison to the google deepmind research; we are using very similar model architecture.
+The data is split into the following rating buckets: 500-1000, 1000-1500, 1500-2000, 2000-2500, and 2500+. They contain 10 million, 40 million, 50 million, 100 million and 250 million datapoints respectively. The first 4 buckets are run for 1 epoch each, and the remaining steps are run for the final bucket.
 
-The input board is converted to a 78-length list, consisting of a special token (to aggregate information from self-attention), 64 tokens to represent the 64 squares of the chess board, 4 tokens to be binary bits for castling rights, and the last 9 binary tokens represent en-passant availability and file. The special token is encoded as 0. The 64 squares are encoded from 1-13 inclusive, to represent the possible state of the square (1 empty square, 6 of own pieces, 6 of enemy pieces). 
 
-The input is passed through an embedding layer, which feeds into a decoder-only self attention transformer. The resultant embedding at index 0 (from the special token) is passed through a linear layer to output a policy vector with 1968 dimensions, to represent all 1968 possible uci moves in chess. Note these are moves that are possible within the game of chess but may be illegal in this specific position. The output vector undergoes softmax and the move corresponding to the dimension with the highest probability is taken as the move played by the model.
 
 ## Training
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 We train the model using reinforcement learning. We simulate games by having the model play against itself. For each position, the model outputs a policy vector of 1968 dim, with each dim corresponding to a possible (legal or illegal) uci move. The vector undergoes softmax and the dimension corresponding to the highest value is chosen as the move to be played.
 
 During training, after each move, the move is checked to see if it is legal. If it is, the game continues. If not, the move is retracted, and a datapoint is added. This continues until the game terminates, where all positions from the game are added as individual datapoints, and a new game simulation starts. This repeates until we attain enough datapoints for a batch, at which point the model is updated using the batch. The batch size increases throughout training.
