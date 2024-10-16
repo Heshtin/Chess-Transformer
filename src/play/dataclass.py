@@ -3,43 +3,20 @@ from dataclasses import dataclass
 
 @dataclass
 class VariableRunConfig:
-    train_steps: int = 150000
-    n_limit: int = None
     train_type: str = "normal"
     masking: bool = False
-    gpu_batch_size: int = 1024
 
 
-@dataclass
-class DataConfig:
-    n_workers: int = 1
-    n1: float = 0.8
-    n2: float = 0.1
     
 #hyperparameters
 @dataclass
 class HyperParamConfig:
-    total_batch_size: int = 1024
-    adamw_weight_decay: float = 0.0
-    gradient_clipping: float = 1.0
-    max_lr: float = 5e-3
-    constant_lr: float = 4e-4
-    max_steps: float = 0.80
     n_layer: int = 8
     n_head: int = 8
     n_embd: int = 64
     dropout: float = 0.0
 
 
-@dataclass
-class RunConfig():
-    total_batch_size: int = HyperParamConfig.total_batch_size # [1024, 4096, 16384]
-    adamw_weight_decay = HyperParamConfig.adamw_weight_decay # [1e-3, 1e-4]
-    gradient_clipping = HyperParamConfig.gradient_clipping
-    max_lr: float = HyperParamConfig.max_lr #[1e-4, 1e-5, 1e-6, 1e-7]
-    min_lr: float = 0.01 * max_lr
-    warmup_steps: float = 0.0075
-    max_steps: float = HyperParamConfig.max_steps #[0.70, 0.75, 0.80]
     
 
 @dataclass

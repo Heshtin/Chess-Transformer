@@ -1,25 +1,12 @@
+import sys
 import os
+import importlib
 import math
-import time
-import inspect
-from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-import sqlite3
-import pandas as pd
-from itertools import islice
 import numpy as np
-from skopt import gp_minimize
-from skopt.space import Real, Integer, Categorical
-from skopt.optimizer import Optimizer
-import joblib
 from torch.utils.data import Dataset, DataLoader, IterableDataset
-import json
-from torch.distributed import init_process_group, destroy_process_group
-from concurrent.futures import ThreadPoolExecutor
-from multiprocessing import Pool, cpu_count
-from torch.nn.utils.rnn import pad_sequence
 
 torch.manual_seed(1337)  #pytorch seed
 np.random.seed(1337) #numpy seed
@@ -29,15 +16,19 @@ if torch.cuda.is_available():
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
-from chess_model import Chess
 from dataloader import ChessIterableDataset, pad_collate
 from dataclass import VariableRunConfig, DataConfig, HyperParamConfig, RunConfig, ChessConfig
 from auxilliary import retrieve_iteration_number, write_to_hyperparam
 
-db_path: str = '/workspace/database/lichess_2/combined_database.db'
-model_dir: str = "/workspace/runs/lichess_run/iters"
-best_model_path: str = "/workspace/runs/lichess_run/best_model.pth"
-model_path: str = None #correct path set ltr if save == True
+sys.path.append('../models/model1')
+import chess_model
+importlib.reload(chess_model)  # Reloads the module
+from chess_model import Chess  # Now import the class
+
+db_path = '/workspace/database/lichess_2/combined_database.db'
+model_dir = "/workspace/runs/lichess_run/iters"
+best_model_path = "/workspace/runs/lichess_run/best_model.pth"
+model_path = None #correct path set ltr if save == True
 log_path = None #correct path set ltr if write == True
 debug_path = "debug.txt"
 existing_model_path = None #"../../runs/lichess_run/iters/state_dict_v53.pth"
