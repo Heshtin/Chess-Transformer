@@ -11,7 +11,7 @@ The model architecture extends and slightly modifies the Vision Transformer-base
 - **84 tokens** in total:
   - The first token is a **CLS token** for aggregating information from attention blocks.
   - After passing through the transformer, the **CLS token** is processed by a linear layer (**fc1**) to output a vector, which undergoes **softmax** to produce a policy vector across all **1968 UCI moves** (possible moves, not just legal moves).
-  - The model learns the consequences of moves related to **castling** and **en passant** rights, which is explained in the next section. The CLS token is passed through another linear layer (**fc3**) to output an **11-dimensional encoding**, representing the **castling** or **en passant** rights.
+  - The model learns the consequences of moves related to **castling** and **en passant** rights, which is explained in the next section. The CLS token is passed through another linear layer (**fc3**) to output an **13-dimensional encoding**, representing the **castling** or **en passant** rights.
 
 - **64 tokens** represent the chessboard squares. Each square can be in one of **13 possible states**:
   - 1 for **empty**.
