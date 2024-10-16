@@ -71,6 +71,7 @@ Secondly, we curate specific test uncommon positions that require deep search. H
 
 It should also be noted that implicit search can only arise with sufficient "space" (ie embedding dimension) and depth (ie number of attention blocks). We hypothesize that the model relies more on pattern recognition at low embedding dimension and number of attention blocks, and gradually conducts deeper and broader implicit searches as these values increase. Hence, we perform the above experiments for a range of embedding dimensions and number of attention blocks, and compare the results.
 
+## 
 
 
 
