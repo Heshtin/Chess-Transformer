@@ -1,7 +1,16 @@
+import sys
+import importlib
+import torch
+import torch.nn as nn
+from torch.nn import functional as F
+
 from accuracy_model import Chess
+from dataclass import ChessConfig
+top_k_indices = 3
+
 torch.set_float32_matmul_precision("high")
 device = "cuda" if torch.cuda.is_available() else "cpu"
-model = Chess(Chess_Config())
+model = Chess(ChessConfig())
 model.to(device)
 print(device)
 total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

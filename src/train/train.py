@@ -20,7 +20,7 @@ from dataloader import ChessIterableDataset, pad_collate
 from dataclass import VariableRunConfig, DataConfig, HyperParamConfig, RunConfig, ChessConfig
 from auxilliary import retrieve_iteration_number, write_to_hyperparam
 
-sys.path.append('../models/model1')
+sys.path.append('../models/model0')
 import chess_model
 importlib.reload(chess_model)  # Reloads the module
 from chess_model import Chess  # Now import the class
