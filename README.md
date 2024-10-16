@@ -73,6 +73,9 @@ The attention architecture is similar to that used in **large language models (L
 - **8 attention heads**.
 - The **MLP block** expands the embedding dimension to **4x** its initial size.
 
+## Implicit search architecture
+To aid implicit search, we are also considering a mechanism where outputs of later attention blocks are fed back into earlier blocks. This is to simulate the nature or search where one performs a series of calculations, and if it doesn't work, goes back and tries again. What layer is fed back into what layer and for how many cycles could be determined using evolution.
+
 ---
 
 # Evidence of Implicit Search vs Pattern Recognition
@@ -174,15 +177,17 @@ Datasets are generated from **game shards** on [lichess.com](https://lichess.com
 
 The data is split into the following rating buckets:
 
-- **500-1000**: 10 million datapoints
-- **1000-1500**: 40 million datapoints
+- **1000-1500**: 50 million datapoints
 - **1500-2000**: 50 million datapoints
 - **2000-2500**: 100 million datapoints
-- **2500+**: 250 million datapoints
+- **2500+**: 100 million datapoints
 
-The first four buckets are run for **1 epoch** each, while the remaining steps are run for the **2500+ bucket**.
+The first three buckets are run for **1 epoch** each, while the remaining steps are run for the **2500+ bucket**.
 
 ## Training
+
+
+
 
 
 
