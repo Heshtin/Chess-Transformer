@@ -1,1 +1,1 @@
-The python file to train the model is under MAIN folder
+PLEASE IGNORE THE SRC_IGNORE FOLDER
