@@ -165,7 +165,7 @@ We intend to recreate a similar experiment using our model and test this hypothe
 
 ---
 
-# Model Interpretation such that humans can understand
+# Interpretation of Models for Human Understanding
 We are also thinking of applying ablation-based heat maps by selectively zeroing out both attention weights and square embeddings, and seeing how significantly it affects the output. From this we can generate heat maps that characterize the importance of each square or pairs of squares is to the output, hence showing what squares the model is focusing on and what squares it is ignoring. As shown in the leela chess paper, it could also uncover lines that the model considers during implicit search. We hope to be able to develop an algorithm to process these data into human understandable explanations of how the model makes its decision.
 
 Here is our current plan:
