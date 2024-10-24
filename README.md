@@ -1,8 +1,14 @@
 # A Novel Approach to the No-Search Chess Engine
 
 ## Introduction
+We are looking to undertake a research project regarding the use of transformer models in chess engines with no explicit search. We are proposing several different tangents for possible research ideas, as follows:
 
-### Model
+1) Evidence of implicit search within the transformer, building on work done by the paper *"Evidence of Learned Look-Ahead in a Chess-Playing Neural Network"* ([link to paper](https://arxiv.org/pdf/2406.00877))
+2) Optimization ideas, including ones that capitalise on the presence of implicit search
+3) Model interpretation using ablation-based heat maps by selectively zeroing out both attention weights and square embeddings, uncovering spatial dependencies between squares and translating these insights into explainable chess strategies
+
+
+## Model
 
 The model architecture extends and slightly modifies the Vision Transformer-based architecture used by Google DeepMind to create the first chess engine without explicit search ([DeepMind paper](https://arxiv.org/pdf/2402.04494)). It aims to further refine the input and introduce a refinement technique while maintaining no explicit search.
 
@@ -132,7 +138,7 @@ We perform the above experiments for a range of **embedding dimensions** and **n
 
 ---
 
-# Attention Patching
+## Attention Patching
 
 In the paper *"Evidence of Learned Look-Ahead in a Chess-Playing Neural Network"* ([link to paper](https://arxiv.org/pdf/2406.00877)), a technique called **activation patching** is used to check the importance of each embedding to the ultimate output of the chess transformer. They analyzed **Leela Chess Zero's** model, which uses a slightly different approach to calculating the output. 
 
@@ -146,24 +152,53 @@ Leela Chess Zero uses **board flipping** and **piece color swapping** when proce
 
 ## Activation Patching in Leela Chess Zero
 
-The paper used **activation patching** to analyze specific positions in Leela Chess Zero’s model. The technique involves "patching in" **corrupted activations** for embeddings corresponding to specific squares and allowing the forward pass to proceed normally. The output is then analyzed for deviations from the original output.
-
-### Key Findings
+The paper used **activation patching** to analyze specific positions in Leela Chess Zero’s model. The technique involves "patching in" **corrupted activations** for embeddings corresponding to specific squares and allowing the forward pass to proceed normally. The output is then analyzed for deviations from the original output. This resulted in the following findings:
 
 1. **Patching the target square** of either the **1st** (immediate move) or **3rd** move (after opponent’s response) **significantly altered** the output, showing these embeddings were crucial for accurate prediction.
 2. **Patching the 2nd move** (opponent’s immediate response) **did not significantly change** the output, an unexpected result that the authors could not fully explain.
-
-### Hypothesis on Learning Black Piece Movements
 
 Our theory is that once the model learns how white pieces move, it **implicitly** gains an understanding of how black pieces move by observing white’s responses to black. For instance, if white does not place a rook on a diagonal with a black bishop, the model learns that **bishops influence diagonally**. This understanding is weaker than knowing that the bishop **can move diagonally and capture**, but it still provides some insight.
 
 This slower, weaker learning of black piece dynamics leads to a **weak implicit search**. While this is not an issue for models like Leela Chess Zero that use **explicit search**, it severely hinders the performance of models without explicit search. This could explain why patching the 2nd move did not significantly affect output: the model’s understanding of black’s moves is weaker.
 
-## Future Experiment
-
 We intend to recreate a similar experiment using our model and test this hypothesis, analyzing how the understanding of black's moves develops without explicit search.
 
 ---
+
+# Model Interpretation such that humans can understand
+We are also thinking of applying ablation-based heat maps by selectively zeroing out both attention weights and square embeddings, and seeing how significantly it affects the output. From this we can generate heat maps that characterize the importance of each square or pairs of squares is to the output, hence showing what squares the model is focusing on and what squares it is ignoring. As shown in the leela chess paper, it could also uncover lines that the model considers during implicit search. We hope to be able to develop an algorithm to process these data into human understandable explanations of how the model makes its decision.
+
+Here is our current plan:
+
+1) Zero out the input embedding of each of the 84 embeddings one by one. Measure how this shifts the policy outputs, producing heat maps to label the importance of each square, This generates a 8x8 heat map of the squares which labels how important they are. It also provides information on whether castling rights, en passant rights, the halfmove count and the full move count affect the decision made. 
+
+2) Zero out the attention weights for each possible pair of tokens one by one. Measure how this shifts the policy outputs, which generates a 64x64 heat map representing the important of each pair of squares
+
+
+
+This project aims to discover complex spatial patterns in chess positions beyond predefined human heuristics like forks or pins. The goal is to allow the AI to learn recurring strategic motifs and interactions between pieces autonomously. Using heat maps and piece encodings, the model identifies critical squares and relationships between pieces, developing a deeper understanding of intricate patterns without the need for human-defined rules.
+
+Approach:
+
+Input:
+8x8 Piece Encoding: A tensor representing the type and position of each piece on the chessboard.
+8x8 Heat Map: A map reflecting the importance of each square based on a defined saliency metric.
+64x64 Attention Heat Map: A matrix indicating the importance of pairwise interactions between squares to the model’s prediction.
+Model Architecture:
+
+Convolutional Neural Networks (CNNs) process the piece encoding and square heat maps in parallel to extract spatial features.
+The 64x64 attention matrix is passed through a dense layer to extract a latent interaction embedding.
+The outputs from the CNNs and the dense layer are concatenated and merged using a fully connected layer to form a pattern embedding.
+Learning and Pattern Discovery:
+
+The model is trained using self-supervised learning tasks or clustering to identify common motifs in the embeddings (e.g., piece coordination, central control).
+K-means clustering is applied to the final embeddings to group similar patterns, representing strategic themes autonomously discovered by the AI.
+Inference and Explanation:
+
+During inference, the model matches board states to clusters to detect recurring patterns.
+Explanations are generated by highlighting the critical squares and interactions based on the attention heat maps, providing users with insights into the strategy.
+This approach leverages deep learning to go beyond human-defined patterns, ensuring the explanations and patterns reflect the internal logic and understanding of the model itself.
+
 
 ## Datasets
 
