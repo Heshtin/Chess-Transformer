@@ -186,9 +186,9 @@ Input:
 64x64 Attention Heat Map: A matrix indicating the importance of pairwise interactions between squares to the model’s prediction.
 Model Architecture:
 
-Convolutional Neural Networks (CNNs) process the piece encoding and square heat maps in parallel to extract spatial features.
-The 64x64 attention matrix is passed through a dense layer to extract a latent interaction embedding.
-The outputs from the CNNs and the dense layer are concatenated and merged using a fully connected layer to form a pattern embedding.
+1) Convolutional Neural Networks (CNNs) process the piece encoding and 8x8 heat maps in parallel to extract spatial features.
+2) The 64x64 attention matrix is passed through a dense layer to extract a latent interaction embedding.
+3) The outputs from the CNNs and the dense layer are concatenated and merged using a fully connected layer to form a pattern embedding.
 Learning and Pattern Discovery:
 
 The model is trained using self-supervised learning tasks or clustering to identify common motifs in the embeddings (e.g., piece coordination, central control).
