@@ -44,6 +44,7 @@ class RunConfig():
 
 @dataclass
 class ChessConfig():
+    total_tokens: int = 78
     squares_size: int = 65 # n_squares + 1 for special token
     special_size: int = 13 # n piece embedding types
     vocab_size: int = 27 # 1 special token, 1 empty square, 6 own pieces, 6 opponent pieces, 4 castling rights, 9 en_passant (1st for availabiltiy, other 8 to indicate file)
