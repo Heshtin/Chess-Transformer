@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import numpy as np
+import chess
 
 from blocks import CausalSelfAttention, MLP, Block, PolicyHead, Transformer
 
@@ -65,16 +66,91 @@ class ChessA(nn.Module):
         policy_input = x[:, 0:1, :].squeeze()
         x_policy = self.policy_head(policy_input, masked_indices=legal_moves_tensor) # (B, 1968)
         return x_policy
+
+    def play(self, fen):
+        board_state_tensor, special_token_tensor = self.fen_to_vector(fen)
+        return self.forward(board_state_tensor, special_token_tensor).argmax()
+        
     
     def accuracy(self, board_state_tensor, special_token_tensor, target_p_tensor, legal_moves_tensor=None):
         x_policy = self.forward(board_state_tensor, special_token_tensor, legal_moves_tensor)
         top_index_tensor = torch.argmax(x_policy, dim=1)
         return (top_index_tensor == target_p_tensor).sum()
     
-    def check_puzzle(self, player_moves_tensor, enemy_moves_tensor, puzzle_starting_fen):
+    def check_puzzle_batch(self, moves_tensor, puzzle_starting_fen, gpu_batch_size,puzzle_size):
+        boards = [chess.board(puzzle_starting_fen)] * gpu_batch_size
+        board_state_tensor, special_token_tensor = torch.stack(self.fen_to_vector(puzzle_starting_fen))
+        for i, move in enumerate(moves_tensor.tolist()):
+            if i % 2 == 0:
+                model_prediction = torch.argmax(self.forward(board_state_tensor, special_token_tensor), dim=1)
+                if model_prediction != move:
+                    return False
+                board.push(move)
+            else:
+                board.push(move)
+                board_state_tensor, special_token_tensor = self.fen_to_model_input(board.fen())
+        return True
+    
+    def check_puzzle(self, moves_tensor, puzzle_starting_fen):
         board = chess.board(puzzle_starting_fen)
+        board_state_tensor, special_token_tensor = self.fen_to_vector(puzzle_starting_fen)
+        for i, move in enumerate(moves_tensor.tolist()):
+            if i % 2 == 0:
+                model_prediction = torch.argmax(self.forward(board_state_tensor, special_token_tensor), dim=1)
+                if model_prediction != move:
+                    return False
+                board.push(move)
+            else:
+                board.push(move)
+                board_state_tensor, special_token_tensor = self.fen_to_model_input(board.fen())
+        return True
+    
+    def fen_to_position_tokens(self, fen):
+        fen_parts = fen.split(" ")
+        rows = fen_parts[0].split("/")
+        if fen_parts[1] == "b":
+            if self.colour_swap:
+                rows = [row.swapcase() for row in rows][::-1]
+                
+                fen_parts[2] = fen_parts[2].swapcase()
+        position = [0] #special token
+        piece_dict = {" ":1, "p":2, "n":3, "b":4, "r":5, "q":6, "k":7, "P":8, "N":9, "B":10, "R":11, "Q":12, "K":13}
+    
+        for row in rows:
+            for square in row:
+                if square.isalpha():
+                    position.append(piece_dict[square])
+                else:
+                    position.extend([1] * int(square))
+
+        return torch.tensor(position)
+    
+    def fen_to_special_tokens(self, fen):
+        fen_parts = fen.split(" ")
+        castling_rights = fen_parts[2]
+        special_tokens = [0,0,0,0]
+        for c in castling_rights:
+            if c == "K":
+                special_tokens[0] = 1
+            elif c == "Q":
+                special_tokens[1] = 1
+            elif c == "k":
+                special_tokens[2] = 1
+            elif c == "q":
+                special_tokens[3] = 1
+        en_passant = fen_parts[3]
+        if en_passant == "-":
+            special_tokens.extend([0] * 9)
+        else:
+            special_tokens.append(1)
+            file_index = ord(en_passant[0]) - 97
+            special_tokens.extend([0] * file_index)
+            special_tokens.append(1)
+            special_tokens.extend([0] * (7 - file_index))
         
-        for i in range(player_moves_tensor.shape[1]):
+        return torch.tensor(special_tokens)
+
+
 
 
         
