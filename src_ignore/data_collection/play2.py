@@ -8,10 +8,10 @@ def fen_to_vector(fen):
     turn_encoding = 0 if turn == "w" else 1
 
     # Initialize the position array with the special token at the start
-    position = [0]  # Special token
+    position = []  # Special token
     piece_dict = {
-        " ": 1, "p": 2, "n": 3, "b": 4, "r": 5, "q": 6, "k": 7,
-        "P": 8, "N": 9, "B": 10, "R": 11, "Q": 12, "K": 13
+        " ": 0, "p": 1, "n": 2, "b": 3, "r": 4, "q": 5, "k": 6,
+        "P": 7, "N": 8, "B": 9, "R": 10, "Q": 11, "K": 12
     }
 
     index = 0
@@ -20,10 +20,10 @@ def fen_to_vector(fen):
         for square in row:
             if square.isdigit():
                 # Add empty squares (represented by 1s) directly
-                position.extend([1] * int(square))
+                position.extend([0] * int(square))
             else:
                 # Add piece codes from the piece_dict
-                position.append(piece_dict.get(square, 1))
+                position.append(piece_dict.get(square, 0))
     
     # Handle castling rights
     castling_rights = fen_parts[2]

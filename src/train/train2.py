@@ -113,8 +113,6 @@ def training(model, train_loader, val_loader, optimizer, grad_accum_steps, devic
     train_iter = iter(train_loader)
     loss_storage = {}
     print("starting training")
-    forward_pass = "first"
-    reevaluation_moves_tensor = None
     for step in range(RunConfig.total_steps):
         optimizer.zero_grad(set_to_none=True)
         losses_list = []        

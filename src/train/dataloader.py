@@ -69,7 +69,7 @@ class ChessIterableDataset(IterableDataset):
         for row in cursor.fetchall():
             board_state = json.loads(row[0])
             board_state = board_state[1:]
-            if VariableRunConfig.token_encoding_scheme % 2 == 0:
+            if VariableRunConfig.token_encoding_scheme % 2 == 0: #if encoding 2 or 4, flip the board vertically and caseswap
                 for i, value in enumerate(board_state):
                     if 1 < value < 8: #0,1 for CLS, empty sq
                         board_state[i] += 6
