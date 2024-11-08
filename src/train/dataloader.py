@@ -26,6 +26,7 @@ if torch.cuda.is_available():
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
+from dataclass import VariableRunConfig
 
 class ChessIterableDataset(IterableDataset):
     def __init__(self, db_path, split, n_limit, n1=0.8, n2=0.1, masking=False):
@@ -66,15 +67,18 @@ class ChessIterableDataset(IterableDataset):
 
         cursor.execute(query)
         for row in cursor.fetchall():
-            pre_board_state = json.loads(row[0])
-            # for i, value in enumerate(board_state):
-            #     if 1 < value < 8: #0,1 for CLS, empty sq
-            #         board_state[i] += 6
-            #     else:
-            #          board_state[i] -= 6
-            board_state = []
-            for i in range(7, -1, -1):
-                board_state.extend(pre_board_state[i*8:(i+1)*8])
+            board_state = json.loads(row[0])
+            board_state = board_state[1:]
+            if VariableRunConfig.token_encoding_scheme % 2 == 0:
+                for i, value in enumerate(board_state):
+                    if 1 < value < 8: #0,1 for CLS, empty sq
+                        board_state[i] += 6
+                    else:
+                        board_state[i] -= 6
+                new_board_state = []
+                for i in range(7, -1, -1):
+                    new_board_state.extend(board_state[i*8:(i+1)*8])
+                board_state = new_board_state
             special_tokens = json.loads(row[1])
             target_move_index = row[2]
             board_state_tensor, special_token_tensor, target_move_tensor = torch.tensor(board_state, dtype=torch.int64), torch.tensor(special_tokens, dtype=torch.int64), torch.tensor(target_move_index, dtype=torch.int64)

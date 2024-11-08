@@ -29,7 +29,6 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
 class CausalSelfAttention(nn.Module):
-
     def __init__(self, model_config):
         super().__init__()
         assert model_config.n_embd % model_config.n_head == 0
@@ -74,9 +73,9 @@ class MLP(nn.Module):
 
     def __init__(self, model_config):
         super().__init__()
-        self.c_fc    = nn.Linear(model_config.n_embd, 4 * model_config.n_embd)
+        self.c_fc    = nn.Linear(model_config.n_embd, model_config.n_embd)
         self.gelu    = nn.GELU()
-        self.c_proj  = nn.Linear(4 * model_config.n_embd, model_config.n_embd)
+        self.c_proj  = nn.Linear(model_config.n_embd, model_config.n_embd)
 
     def forward(self, x):
         x = self.c_fc(x)
@@ -99,11 +98,6 @@ class Block(nn.Module):
         x = x + self.dropout_1(self.attn(self.ln_1(x)))
         x = x + self.dropout_2(self.mlp(self.ln_2(x)))
         return x
-
-
-
-
-
 
 class PolicyHead(nn.Module):
     def __init__(self, model_config):
@@ -152,40 +146,43 @@ class PolicyHead(nn.Module):
         return output
 
 class Transformer(nn.Module):
-    def __init__(self, model_config):
+    def __init__(self, model_config, device):
         super().__init__()
         self.model_config = model_config
-        self.transformer = nn.ModuleDict(dict(
-            te = nn.Embedding(model_config.vocab_size, model_config.n_embd),
-            pe = nn.Embedding(model_config.squares_size, model_config.n_embd),
-            me = nn.Embedding(model_config.n_possible_moves + 1, model_config.n_embd),
-            mre = nn.Embedding(model_config.n_moves_reevaluate, model_config.n_embd), # move rank embeddings
-            #se = nn.Embedding(1, model_config.n_embd), #scaling embedding
-            h = nn.ModuleList([Block(model_config) for _ in range(model_config.n_layer)]),
-            ln_f = nn.LayerNorm(model_config.n_embd),
-        ))
-        self.se = nn.Parameter(torch.randn(model_config.n_embd)).to(device)
-
-    def forward(self, board_state_tensor, special_tokens_tensor, reevaluation_moves_tensor=None):
+        self.encoding_type = (model_config.token_encoding_scheme < 3)
+        if self.encoding_type:
+            self.te = nn.Embedding(13, model_config.n_embd)
+        else:
+            self.pte = nn.Embedding(8, model_config.n_embd)
+            self.ce = nn.Embedding(4, model_config.n_embd)
+        self.pe = nn.Embedding(model_config.squares_size, model_config.n_embd)
+        self.h = nn.ModuleList([Block(model_config) for _ in range(model_config.n_layer)])
+        self.ln_f = nn.LayerNorm(model_config.n_embd)
+        self.cls_emb = nn.Parameter(torch.randn(model_config.n_embd)).to(device)
+        
+    def forward(self, board_state_tensor, special_tokens_tensor):
         # idx is of shape (B, T)
         B, T = board_state_tensor.size()
         assert T <= self.model_config.squares_size, f"Cannot forward sequence of length {T}, block size is only {self.model_config.squares_size}"
         # forward the token and position embeddings
         pos = torch.arange(0, T, dtype=torch.long, device=board_state_tensor.device)  # shape (T)
-        pos_emb = self.transformer.pe(pos)  # position embeddings of shape (T, n_embd)
-        tok_emb = self.transformer.te(board_state_tensor)  # token embeddings of shape (B, T, n_embd)
+        pos_emb = self.pe(pos)  # position embeddings of shape (T, n_embd)
+        if self.encoding_type:
+            tok_emb = self.te(board_state_tensor)  # token embeddings of shape (B, T, n_embd)
+        else:
+            colour_tensor = (board_state_tensor + 4) // 6 #1 -> 0, 2-7 -> 1, 8-13 -> 2
+            piece_type_tensor = torch.where(board_state_tensor == 1, torch.zeros_like(board_state_tensor), (board_state_tensor - 2) % 6 + 1)
+            tok_emb = self.pte(piece_type_tensor) + self.ce(colour_tensor)
         special_emb = special_tokens_tensor.unsqueeze(-1).expand(B, self.model_config.special_size, self.model_config.n_embd)
-        moves_tensor = torch.full((B, self.model_config.n_moves_reevaluate), self.model_config.n_possible_moves).to(device)
-        move_emb = self.transformer.me(moves_tensor)
+        cls_emb_expanded = self.cls_emb.unsqueeze(0).unsqueeze(0).expand(B, T, self.model_config.n_embd)
 
-
-        x = torch.cat((tok_emb + pos_emb, special_emb, move_emb), dim=1)
+        x = torch.cat((cls_emb_expanded, tok_emb + pos_emb, special_emb), dim=1)
 
         # forward the blocks of the transformer
-        for block in self.transformer.h:
+        for block in self.h:
             x = block(x)
 
         # forward the final layernorm and the classifier
-        x = self.transformer.ln_f(x)
+        x = self.ln_f(x)
         self.out = x
         return self.out

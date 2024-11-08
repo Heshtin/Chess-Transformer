@@ -16,9 +16,10 @@ def retrieve_iteration_number(write):
     return iteration
 
     
-def write_to_hyperparam(log_path, total_params, HyperParamConfig):
+def write_to_hyperparam(log_path, total_params, HyperParamConfig, VariableRunConfig, DataConfig):
     with open(log_path, 'a') as log_file:
         log_file.write(f"Hyperparameters:\n")
+        log_file.write(f"encoding scheme: {HyperParamConfig.encoding_scheme}")
         log_file.write(f"total_batch_size: {HyperParamConfig.total_batch_size}\n")
         log_file.write(f"adamw_weight_decay: {HyperParamConfig.adamw_weight_decay}\n")
         log_file.write(f"gradient_clipping: {HyperParamConfig.gradient_clipping}\n")
@@ -30,5 +31,12 @@ def write_to_hyperparam(log_path, total_params, HyperParamConfig):
         log_file.write(f"n_blocks_policyhead: {HyperParamConfig.n_blocks_policyhead}\n")
         log_file.write(f"n_blocks_valuehead: {HyperParamConfig.n_blocks_valuehead}\n")
         log_file.write(f"dropout: {HyperParamConfig.dropout}\n")
-        log_file.write(f"total no of parameters: {total_params}\n")
+        log_file.write(f"total no of parameters: {total_params}\n\n")
+        log_file.write(f"Run Configuration: \n")
+        log_file.write(f"train steps: {VariableRunConfig.train_steps}")
+        log_file.write(f"masking: {VariableRunConfig.masking}")
+        log_file.write(f"gpu_batch_size: {VariableRunConfig.gpu_batch_size}")
+        log_file.write(f"n1, n2: {DataConfig.n1}, {DataConfig.n2}")
+
+
 

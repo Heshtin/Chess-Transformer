@@ -22,9 +22,10 @@ existing_model_path = None
 
 class ChessA(nn.Module):
 
-    def __init__(self, model_config):
+    def __init__(self, model_config, device):
         super().__init__()
         self.model_config = model_config
+        self.device = device
         self.transformer = Transformer(self.model_config)
         self.policy_head = PolicyHead(self.model_config)
         if existing_model_path is not None:
@@ -59,10 +60,31 @@ class ChessA(nn.Module):
             if module.bias is not None:
                 nn.init.constant_(module.bias, 0)
 
+    def preprocess_input(board_state_tensor, special_tokens_tensor, encoding_scheme):
+        # Check if we need to flip and swap colors based on the encoding scheme
+        if encoding_scheme % 2 == 0:
+            # Flip vertically and color swap for the board state
+            board_state_tensor = board_state_tensor.view(-1, 8, 8).flip(1).reshape(-1, 64)
+
+            # Color swap for piece codes
+            black_mask = (board_state_tensor > 1) & (board_state_tensor < 8)
+            white_mask = (board_state_tensor > 7) & (board_state_tensor < 14)
+            board_state_tensor[black_mask] += 6
+            board_state_tensor[white_mask] -= 6
+
+            # Adjust special_tokens for castling rights due to color swap
+            # Swapping index 0 with index 2, and index 1 with index 3
+            temp_0, temp_1 = special_tokens_tensor[:, 0].clone(), special_tokens_tensor[:, 1].clone()
+            special_tokens_tensor[:, 0], special_tokens_tensor[:, 2] = special_tokens_tensor[:, 2], temp_0
+            special_tokens_tensor[:, 1], special_tokens_tensor[:, 3] = special_tokens_tensor[:, 3], temp_1
+
+        return board_state_tensor, special_tokens_tensor
+
 
     def forward(self, board_state_tensor, special_token_tensor, legal_moves_tensor=None):
         # idx is of shape (B, T)
-        x = self.transformer(board_state_tensor, special_token_tensor)
+        board_state_tensor, special_token_tensor = self.preprocess_input(board_state_tensor, special_token_tensor, self.model_config.token_encoding_scheme)
+        x = self.transformer(board_state_tensor, special_token_tensor, self.device)
         policy_input = x[:, 0:1, :].squeeze()
         x_policy = self.policy_head(policy_input, masked_indices=legal_moves_tensor) # (B, 1968)
         return x_policy
@@ -78,7 +100,7 @@ class ChessA(nn.Module):
         return (top_index_tensor == target_p_tensor).sum()
     
     def check_puzzle_batch(self, moves_tensor, puzzle_starting_fen, gpu_batch_size,puzzle_size):
-        boards = [chess.board(puzzle_starting_fen)] * gpu_batch_size
+        board = [chess.board(puzzle_starting_fen)] * gpu_batch_size
         board_state_tensor, special_token_tensor = torch.stack(self.fen_to_vector(puzzle_starting_fen))
         for i, move in enumerate(moves_tensor.tolist()):
             if i % 2 == 0:
@@ -128,16 +150,7 @@ class ChessA(nn.Module):
     def fen_to_special_tokens(self, fen):
         fen_parts = fen.split(" ")
         castling_rights = fen_parts[2]
-        special_tokens = [0,0,0,0]
-        for c in castling_rights:
-            if c == "K":
-                special_tokens[0] = 1
-            elif c == "Q":
-                special_tokens[1] = 1
-            elif c == "k":
-                special_tokens[2] = 1
-            elif c == "q":
-                special_tokens[3] = 1
+        special_tokens = [1 if c in "KQkq" else 0 for c in castling_rights]
         en_passant = fen_parts[3]
         if en_passant == "-":
             special_tokens.extend([0] * 9)
