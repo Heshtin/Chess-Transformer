@@ -29,7 +29,6 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
 class CausalSelfAttention(nn.Module):
-
     def __init__(self, model_config):
         super().__init__()
         assert model_config.n_embd % model_config.n_head == 0
